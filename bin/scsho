@@ -1,0 +1,49 @@
+#!/usr/bin/guile --no-auto-compile
+!#
+;;; scsho -- the original scsh: guile with the (scsh ...) modules loaded, and a
+;;; stock REPL.  None of our additions are involved:
+;;;
+;;;   * no (editor ...) modules are loaded -- no structured line, no job control
+;;;   * run, &, | and the redirections are scsh's own forms, as they always were
+;;;   * & therefore behaves as it did before job control: the child keeps the
+;;;     terminal, so a background job that reads it will read your keystrokes
+;;;
+;;;   scsho              a plain REPL with scsh loaded
+;;;   scsho FILE ...     load FILE ... , then the REPL
+;;;
+;;; (bin/scsh --plain does the same thing, from the editor's launcher.  The one
+;;; library change we have made -- exporting process-group from (scsh syscalls)
+;;; -- is inert here: it only makes an already-defined name visible.)
+
+;;; Find this script's directory (and the tree it lives in), wherever the
+;;; script was invoked from: (scsh ...) lives in the tree root.
+(set! %load-path
+      (let* ((here (dirname (current-filename)))      ; .../bin
+             (root (dirname here)))                   ; the source tree
+        (cons root (cons here %load-path))))
+
+;;; The core set of scsh modules.  (scsh syntax) provides run, &, |,
+;;; redirection and friends; the other modules add the procedures and
+;;; syntax that those rely on.
+(use-modules (scsh syntax))       ; run, &, ||, &&, run/string, ...
+(use-modules (scsh scsh))         ; with-cwd, call/fdes, fork, ...
+(use-modules (scsh procobj))      ; wait, proc:pid, ...
+(use-modules (scsh run-extras))   ; run/collecting*
+(use-modules (scsh glob))         ; glob
+
+;;; line editing and history (ignore failure, e.g. when stdin is not a tty)
+(catch #t
+       (lambda ()
+         (use-modules (ice-9 readline))
+         (activate-readline))
+       (lambda (key . args) #f))
+
+;;; (command-line) begins with this script itself, so drop the car.
+(for-each (lambda (f) (if (not (string-prefix? "-" f)) (load f)))
+          (cdr (command-line)))
+
+(newline)
+(display "scsh is loaded -- try (run (ls -l)) or (run/string (echo hi))")
+(newline)
+(use-modules (ice-9 top-repl))
+(top-repl)

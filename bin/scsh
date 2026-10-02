@@ -1,0 +1,55 @@
+#!/usr/bin/guile
+!#
+;;; scsh -- the scsh shell.
+;;;
+;;;   scsh                the structure editor REPL   (editor/run.scm)
+;;;   scsh --plain        a plain guile REPL, with scsh loaded
+;;;   scsh FILE ...       load FILE ..., then a plain REPL
+;;;
+;;; Run it from anywhere: the directory holding this script is added to
+;;; %load-path, so both the (scsh ...) modules and the (editor ...) modules
+;;; are found.
+
+;;; Find this script's directory (and the tree it lives in), wherever the
+;;; script was invoked from, and let Guile search both: (scsh ...) lives in the
+;;; tree root, and so does (editor ...).
+(set! %load-path
+      (let* ((here (dirname (current-filename)))      ; .../bin
+             (root (dirname here)))                   ; the source tree
+        (cons root (cons here %load-path))))
+
+;;; The core set of scsh modules. (scsh syntax) provides run, &, |,
+;;; redirection and friends; the other modules add the procedures and
+;;; syntax that those rely on.
+(use-modules (scsh syntax))       ; run, &, ||, &&, run/string, ...
+(use-modules (scsh scsh))         ; with-cwd, call/fdes, fork, ...
+(use-modules (scsh procobj))      ; wait, proc:pid, ...
+(use-modules (scsh run-extras))   ; run/collecting*
+(use-modules (scsh glob))         ; glob
+(use-modules (editor properties)) ; scsh-property, scsh-property-set!
+
+;;; the stock REPL: line editing and history, then everything in (guile-user)
+(define (plain-repl)
+  (catch #t
+         (lambda ()
+           (use-modules (ice-9 readline))
+           (activate-readline))
+         (lambda (key . args) #f))
+  (newline)
+  (display "scsh is loaded -- try (run (ls -l)) or (run/string (echo hi))")
+  (newline)
+  (use-modules (ice-9 top-repl))
+  (top-repl))
+
+;;; the structure editor: tree, locus, structural keys (editor/README.md)
+(define (structure-editor)
+  (load (in-vicinity (dirname (current-filename)) "../editor/run.scm")))
+
+;;; (command-line) begins with this script itself, so drop the car.
+(let ((args (cdr (command-line))))
+  (cond ((member "--plain" args) (plain-repl))
+        ((null? args) (structure-editor))
+        (else (for-each (lambda (f)
+                          (if (not (string-prefix? "-" f)) (load f)))
+                        args)
+              (plain-repl))))

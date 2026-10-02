@@ -19,7 +19,7 @@
   :use-module (scsh let-optionals-aster)
   :export (export %exec %%fork cwd user-gid user-effective-gid set-gid
 	user-supplementary-gids user-uid user-effective-uid set-uid
-	user-login-name pid parent-pid set-process-group
+	user-login-name pid parent-pid set-process-group process-group
 	become-session-leader set-umask process-times cpu-ticks/sec
 	set-file-mode set-file-owner set-file-group read-symlink
 	delete-directory set-file-times

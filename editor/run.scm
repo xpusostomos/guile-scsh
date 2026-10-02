@@ -1,0 +1,100 @@
+#!/usr/bin/guile -L .
+!#
+;;; editor/run.scm -- the structure editor, run as an scsh REPL.
+;;;
+;;;   ./bin/scsh                  (the usual way -- see bin/scsh)
+;;;   ./editor/run.scm            (or:  guile -L . editor/run.scm)
+;;;
+;;; Every keystroke is structural: the tree is the truth, the line you see is
+;;; its rendering, and Enter evaluates the tree.  A line starts EMPTY; the
+;;; first word typed opens (run ()) for you, so "ls -l" becomes (run (ls -l)).
+;;; That seeding is the shell's policy, not the editor's -- the editor has no
+;;; notion of "run" at all.
+
+(use-modules (ice-9 receive))
+(use-modules (editor engine) (editor render) (editor repl) (editor scsh)
+             (editor job) (editor term) (editor history) (editor properties))
+(use-modules (scsh syntax) (scsh scsh) (scsh procobj) (scsh run-extras) (scsh glob))
+
+;;; the prompt is the 'prompt property, re-read before every line -- a string
+;;; as it stands, a lambda called fresh each time, "scsh> " when unset
+;;; (scsh-prompt lives in editor/properties.scm)
+
+;;; THE KEY TABLE -- one dispatch mechanism for the whole shell: the shell's
+;;; policy rows first (|, >, & -- each declines off a shell line or away from a
+;;; form's end), then the editor's structural and control rows, then the
+;;; printer, which always handles.  It is passed through the whole machinery,
+;;; so a program using the editor can supply its own instead.
+(define key-table (append shell-rules core-rules))
+
+;;; a fresh line is EMPTY.  The first word typed opens (run ()) with the locus
+;;; inside the command form -- a shell line begins with a command, so that is
+;;; what the shell seeds; the editor itself knows nothing of (run ...).
+(define (fresh)
+  (values '() (make-locus '() 0 0)))
+
+;;; Enter: the tree is the truth, so committing it is just running it -- and
+;;; because the line is a shell line, job control has its say here.  `run` is a
+;;; foreground job: the terminal is pointed at it while the job is still parked,
+;;; then it is released on a sane terminal, and the editor takes the terminal
+;;; back afterwards.  `&` is a background job: released without the terminal, so
+;;; a job that reads it is stopped by the kernel (SIGTTIN) -- bash's behaviour.
+;;; With job control off, both go through scsh's own run/& as before.
+(define (commit tree)
+  (let ((x (line-datum (tree->sexp tree))))
+    (if (and (job-control?) (pair? x) (memv (car x) '(run &)))
+        (let ((job (job-start (lambda ()
+                                (eval (cons 'exec-epf (cdr x))
+                                      (interaction-environment)))
+                              (render-tree tree))))
+          (if (eq? (car x) 'run)
+              (let ((status (call-with-cooked-terminal
+                             (lambda () (job-foreground! job)))))
+                (when (job-stopped-status? status)      ; ^Z, or SIGTTIN at start
+                  (jobs-add! job)
+                  (job-announce! job))
+                ;; as in bash, a foreground command that finishes says nothing:
+                ;; printing its status would trail a "0" after every command
+                *unspecified*)
+              (begin (jobs-add! job)
+                     (job-background! job)
+                     (job-launched! job)                ; bash-style "[1] 12345"
+                     (if #f #f))))
+        (eval x (interaction-environment)))))
+
+(define *unspecified* (if #f #f))
+
+;;; Before each prompt, see how the jobs are doing: that is where a background
+;;; job's "Done" or "Stopped" is noticed and reported.
+(define (main)
+  (history-load!)                     ; the previous session's lines come back
+  (ignore-terminal-stop!)             ; we point the terminal at jobs and back
+  (call-with-restored-terminal        ; and we never leave it raw, however we go
+   (lambda ()
+     (let loop ()
+       (job-poll-all!)
+       (history-reset!)               ; a fresh line: recall starts at the newest
+       (receive (tree locus) (fresh)
+         (receive (done action)
+             (call-with-values (lambda () (edit-line tree locus
+                                                     #:prompt (scsh-prompt)
+                                                     #:seed seed
+                                                     #:rules key-table))
+               (lambda (tree locus action) (values tree action)))
+           (cond
+             ((not (eq? action 'evaluate)) (display "bye") (newline)) ; EOF, ^C
+             ((null? done) (loop))                    ; a blank line: nothing to run
+             (else
+              (catch #t
+                     (lambda ()
+                       (let ((v (commit done)))
+                         (unless (eq? v *unspecified*) (write v) (newline))))
+                     (lambda (key . args)
+                       (if (eq? key 'quit)                ; (quit) ends the shell
+                           (begin (display "bye") (newline) (exit 0))
+                           (begin (display "error: ") (display key) (display " ")
+                                  (display args) (newline)))))
+              (history-add! done)     ; after each execution, the line is history
+              (loop)))))))))
+
+(main)
