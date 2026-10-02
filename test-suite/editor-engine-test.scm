@@ -208,7 +208,7 @@
 ;;; the second "(" -- it stepped onto the START of the form to the left, i.e.
 ;;; clean over the whole form.  Leftwards of a form's ")" is that form's END.
 
-(define nested (sexp->tree '((("ls" "df") "sdf" "dsf") "zf")))
+(define nested (sexp->tree '(((ls df) sdf dsf) zf)))
 
 (define (at tree locus)
   (receive (text col row bold) (render tree locus)

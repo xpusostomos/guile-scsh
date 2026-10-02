@@ -26,16 +26,19 @@
   #:export (render render-tree pieces))
 
 ;; A bare quote prefix hugs what follows it: '(1 2), not ' (1 2).
-(define prefix-strings (list "'" "`" "," ",@"))
+(define prefix-strings (list "'" "`" "," ",@" "!"))
 
 (define (prefix-element? e)
   (and (string? e) (member e prefix-strings)))
 
 ;; A word may carry its prefix -- ",x" is written in one go -- and such a word
 ;; standing at the head of a line is not a form: the line names a value, so it
-;; is drawn bare, ",x" rather than "(,x)".
+;; is drawn bare, ",x" rather than "(,x)".  A line headed by ! is the same
+;; bargain in reverse: it names a shell command, so it is drawn bare too.
 (define (prefixed-word? e)
-  (and (string? e) (> (string-length e) 0) (char=? #\, (string-ref e 0))))
+  (and (string? e) (> (string-length e) 0)
+       (or (char=? #\, (string-ref e 0))
+           (char=? #\! (string-ref e 0)))))
 
 ;; the form's first word, if any -- its name decides the indentation rule
 (define (first-word node)

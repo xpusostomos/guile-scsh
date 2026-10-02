@@ -26,15 +26,16 @@
 (use-modules (scsh procobj))      ; wait, proc:pid, ...
 (use-modules (scsh run-extras))   ; run/collecting*
 (use-modules (scsh glob))         ; glob
-(use-modules (editor properties)) ; scsh-property, scsh-property-set!
+(use-modules (ice-9 readline))    ; the plain repl's line editing
+(use-modules (ice-9 top-repl))    ; the plain repl itself
 
 ;;; the stock REPL: line editing and history, then everything in (guile-user)
 (define (plain-repl)
-  (catch #t
-         (lambda ()
-           (use-modules (ice-9 readline))
-           (activate-readline))
-         (lambda (key . args) #f))
+  ;; the editor modules resolve through the load path this script sets up at
+  ;; runtime -- an import at the top of the file would need them at COMPILE
+  ;; time, before that path exists
+  (use-modules (editor properties))   ; scsh-property, scsh-property-set!
+  (activate-readline)
   (newline)
   (display "scsh is loaded -- try (run (ls -l)) or (run/string (echo hi))")
   (newline)

@@ -13,13 +13,12 @@
   #:use-module (ice-9 receive)
   #:use-module (ice-9 optargs)
   #:use-module (srfi srfi-9)      ; define-record-type
-  #:use-module (srfi srfi-13)     ; string-contains
   #:use-module (editor engine)
   #:use-module (editor render)
   #:use-module (editor term)
   #:use-module (editor history)
   #:use-module (editor properties)
-  #:export (rule rule? rule-match rule-handle core-rules dispatch-key step run-loop edit-line
+  #:export (make-rule rule? rule-match rule-handle core-rules dispatch-key step run-loop edit-line
             search-enter search-rescan search-accept C-r C-g))
 
 ;;; ---- the key table ----------------------------------------------------------
@@ -37,7 +36,7 @@
 ;;; through the whole machinery, so a user can supply a different one; a global
 ;;; default is composed at the top (editor/run.scm).
 (define-record-type <rule>
-  (rule match handle)
+  (make-rule match handle)
   rule?
   (match rule-match)
   (handle rule-handle))
@@ -52,36 +51,36 @@
 ;;; brackets, nothing to do with shells; control keys likewise.
 (define core-rules
   (list
-   (rule (lambda (k) (eq? k 'enter))     (lambda (t l k) (finish t l 'evaluate)))
-   (rule (lambda (k) (eq? k 'eof))       (lambda (t l k) (finish t l 'exit)))
-   (rule (lambda (k) (eq? k 'interrupt)) (lambda (t l k) (finish t l 'exit)))
-   (rule (lambda (k) (eq? k 'left))      (lambda (t l k) (done t (move-left t l))))
-   (rule (lambda (k) (eq? k 'right))     (lambda (t l k) (done t (move-right t l))))
+   (make-rule (lambda (k) (eq? k 'enter))     (lambda (t l k) (finish t l 'evaluate)))
+   (make-rule (lambda (k) (eq? k 'eof))       (lambda (t l k) (finish t l 'exit)))
+   (make-rule (lambda (k) (eq? k 'interrupt)) (lambda (t l k) (finish t l 'exit)))
+   (make-rule (lambda (k) (eq? k 'left))      (lambda (t l k) (done t (move-left t l))))
+   (make-rule (lambda (k) (eq? k 'right))     (lambda (t l k) (done t (move-right t l))))
    ;; up/down recall the history (editor/history.scm): the structural move-up
    ;; and move-down keep their functions but no longer own these keys
-   (rule (lambda (k) (eq? k 'up))
+   (make-rule (lambda (k) (eq? k 'up))
          (lambda (t l k) (receive (t2 l2) (history-previous t l) (done t2 l2))))
-   (rule (lambda (k) (eq? k 'down))
+   (make-rule (lambda (k) (eq? k 'down))
          (lambda (t l k) (receive (t2 l2) (history-next t l) (done t2 l2))))
-   (rule (lambda (k) (eq? k 'home))      (lambda (t l k) (done t (move-home t l))))
-   (rule (lambda (k) (eq? k 'end))       (lambda (t l k) (done t (move-end t l))))
-   (rule (lambda (k) (eq? k 'backspace))
+   (make-rule (lambda (k) (eq? k 'home))      (lambda (t l k) (done t (move-home t l))))
+   (make-rule (lambda (k) (eq? k 'end))       (lambda (t l k) (done t (move-end t l))))
+   (make-rule (lambda (k) (eq? k 'backspace))
          (lambda (t l k) (receive (t2 l2) (delete-left t l)  (done t2 l2))))
-   (rule (lambda (k) (eq? k 'delete))
+   (make-rule (lambda (k) (eq? k 'delete))
          (lambda (t l k) (receive (t2 l2) (delete-right t l) (done t2 l2))))
-   (rule (lambda (k) (eq? k 'm-return))
+   (make-rule (lambda (k) (eq? k 'm-return))
          (lambda (t l k) (receive (t2 l2) (insert-break t l) (done t2 l2))))
    ;; Tab is intercepted by the loop, which remembers which way it is going;
    ;; the row is here so a direct dispatch still does the plain regroup
-   (rule (lambda (k) (eq? k 'tab))
+   (make-rule (lambda (k) (eq? k 'tab))
          (lambda (t l k) (receive (t2 l2) (transpose-node t l) (done t2 l2))))
-   (rule (lambda (k) (eq? k #\()) (lambda (t l k) (receive (t2 l2) (insert-form t l) (done t2 l2))))
-   (rule (lambda (k) (eq? k #\))) (lambda (t l k) (receive (t2 l2) (leave-form t l) (done t2 l2))))
-   (rule (lambda (k) (eq? k #\;)) (lambda (t l k) (receive (t2 l2) (wrap-begin t l)  (done t2 l2))))
+   (make-rule (lambda (k) (eq? k #\()) (lambda (t l k) (receive (t2 l2) (insert-form t l) (done t2 l2))))
+   (make-rule (lambda (k) (eq? k #\))) (lambda (t l k) (receive (t2 l2) (leave-form t l) (done t2 l2))))
+   (make-rule (lambda (k) (eq? k #\;)) (lambda (t l k) (receive (t2 l2) (wrap-begin t l)  (done t2 l2))))
    ;; the printer: the last row, and it always handles -- a printable character
    ;; is typed, anything that reached it (control characters, unknown keys) is
    ;; ignored.  This is the "ultimate fallback is print as-is" rule.
-   (rule (lambda (k) #t)
+   (make-rule (lambda (k) #t)
          (lambda (t l k)
            (if (and (char? k) (char>=? k #\space))
                (receive (t2 l2) (insert-char t l k) (done t2 l2))
@@ -263,27 +262,17 @@
                    (lambda (text col row bold) (draw prompt text col row bold))
                    initial-tree initial-locus #:seed seed #:rules rules
                    #:search-draw (lambda (query match failed)
+                                   ;; only the MATCHED SPAN of the found line
+                                   ;; renders in reverse video (bash highlights
+                                   ;; just the query, not the whole line); the
+                                   ;; span and its case rule are the search's
+                                   ;; own (history's match-span).  The failed
+                                   ;; frame shows the query, unhighlighted.
                                    (let* ((text (if (and match (not failed)) match query))
                                           (ls (split-newlines text))
-                                          ;; only the MATCHED SPAN of the found
-                                          ;; line renders in reverse video (bash
-                                          ;; highlights just the query, not the
-                                          ;; whole line); the search guarantees
-                                          ;; the query is in there -- and the
-                                          ;; case rule is the search's own, so
-                                          ;; 'completion-ignore-case counts here
-                                          ;; too
-                                          (find (if (scsh-property 'completion-ignore-case)
-                                                    string-contains-ci
-                                                    string-contains))
-                                          (spans (if (and match
-                                                          (not failed)
-                                                          (positive? (string-length query)))
-                                                     (let ((i (find match query)))
-                                                       (if i
-                                                           (list (cons i (+ i (string-length query))))
-                                                           '()))
-                                                     '())))
+                                          (span (and match (not failed)
+                                                     (match-span query match)))
+                                          (spans (if span (list span) '())))
                                      (draw (if failed
                                                "(failed reverse-i-search)`': "
                                                "(reverse-i-search)`': ")

@@ -210,6 +210,7 @@
             ((or (char=? ch (integer->char 127)) (char=? ch (integer->char 8))) 'backspace)
             ((char=? ch (integer->char 4)) 'eof)          ; C-d
             ((char=? ch (integer->char 3)) 'interrupt)    ; C-c
+            ((char=? ch (integer->char 26)) 'suspend)     ; C-z
             (else ch)))))
 
 ;;; ---- drawing ---------------------------------------------------------------

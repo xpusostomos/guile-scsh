@@ -28,7 +28,7 @@
   #:export (make-locus locus-path locus-index locus-offset
             node? sym? element?
             container-at with-container splice list-replace remove-at
-            insert-char delete-left
+            insert-char insert-char* delete-left
             insert-form leave-form delete-node transpose-node delete-right
             insert-break break? wrap-begin
             slurp-node barf-node can-slurp? can-barf? regroup target-form-path
@@ -635,7 +635,12 @@
   (cond ((null? x) '())
         ((pair? x) (map sexp->tree x))
         ((symbol? x) (symbol->string x))
-        ((string? x) x)
+        ;; a string datum spells itself WITH its quotes: the tree's word is
+        ;; what the reader reads back, and a bare word reads as a symbol --
+        ;; dropping the quotes turned (display "hi") into (display hi).  The
+        ;; one exception is the empty string, which IS the tree's empty-word
+        ;; placeholder -- the dangling word the cursor sits in.
+        ((string? x) (if (string-null? x) x (object->string x)))
         ((number? x) (number->string x))
         (else (object->string x))))
 

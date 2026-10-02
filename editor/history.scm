@@ -20,7 +20,8 @@
   #:use-module (editor render)
   #:use-module (editor properties)
   #:export (history-load! history-add! history-file history-previous history-next
-            history-reset! history-items history-clear! history-search datum->tree))
+            history-reset! history-items history-clear! history-search datum->tree
+            match-span))
 
 ;;; the newest index <= FROM whose rendered line contains QUERY -- the backward
 ;;; search C-r walks; #f when nothing matches.  Inclusive of FROM, so narrowing
@@ -36,6 +37,19 @@
       (cond ((< i 0) #f)
             ((contains (render-tree (list-ref *items* i)) query) i)
             (else (lp (- i 1)))))))
+
+;;; where QUERY sits in MATCH -- the span C-r's frame highlights, under the
+;;; same case rule the search itself follows; #f when the query is empty or
+;;; the match is not a line.  Both editors' search frames use this, so the
+;;; highlight and the search can never disagree.
+(define (match-span query match)
+  (if (and (string? match) (positive? (string-length query)))
+      (let ((find (if (scsh-property 'completion-ignore-case)
+                      string-contains-ci
+                      string-contains)))
+        (let ((i (find match query)))
+          (and i (cons i (+ i (string-length query))))))
+      #f))
 
 (define *items* '())          ; trees, oldest first
 (define *pos* 0)              ; an index into *items*; the length = the draft
@@ -59,10 +73,15 @@
 ;;; (unquote x), and the tree wants the comma WORD in front of the item --
 ;;; ("," "x") and ("," (+ ...)) render as ",x" and ",(+ 1 2)" exactly as typed.
 (define (datum->tree d)
-  (if (and (pair? d) (assq (car d) '((unquote . ",") (unquote-splicing . ",@"))))
-      (list (cdr (assq (car d) '((unquote . ",") (unquote-splicing . ",@"))))
-            (sexp->tree (cadr d)))
-      (sexp->tree d)))
+  (cond ((and (pair? d) (assq (car d) '((unquote . ",") (unquote-splicing . ",@"))))
+         (list (cdr (assq (car d) '((unquote . ",") (unquote-splicing . ",@"))))
+               (sexp->tree (cadr d))))
+        ;; a ! line: the value is the verbatim command string, spelled bare --
+        ;; (! "ls -l") is the tree ("!" "ls -l"), rendering "!ls -l"
+        ((and (pair? d) (eq? (car d) '!) (pair? (cdr d)) (null? (cddr d))
+              (string? (cadr d)))
+         (list "!" (cadr d)))
+        (else (sexp->tree d))))
 
 ;;; read the file, one datum per entry.  A read ERROR (hand-edited junk) stops
 ;;; the load there: whatever parsed is kept, and nothing is ever overwritten --
@@ -100,8 +119,24 @@
         ;; dotted-pair syntax; guile's write renders the symbol as #{.}#,
         ;; which reads back as the same symbol.  Breaks never reach the
         ;; datum, so they were lost on the round trip anyway.
-        (write (tree->sexp tree) p)
-        (newline p)
+        ;; A value line spells itself WITH its marker -- ,car -- which is
+        ;; how the file format defines it: writing the datum gave
+        ;; ((unquote car)) (guile's write does not sugar unquote), which
+        ;; loaded back as the wrong tree.
+        (cond ((and (pair? tree) (pair? (cdr tree)) (null? (cddr tree))
+                    (string? (car tree))
+                    (or (string=? (car tree) ",") (string=? (car tree) ",@")))
+               (display (car tree) p)
+               (write (cadr (car (tree->sexp tree))) p)
+               (newline p))
+              ;; a ! line: the readable datum (! "ls -l") -- never Scheme
+              ((and (pair? tree) (pair? (cdr tree)) (null? (cddr tree))
+                    (string? (car tree)) (string=? (car tree) "!"))
+               (write (list '! (cadr tree)) p)
+               (newline p))
+              (else
+               (write (tree->sexp tree) p)
+               (newline p)))
         (close-port p))))
   tree)
 

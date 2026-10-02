@@ -9,7 +9,7 @@
 
 (use-modules (ice-9 receive) (ice-9 rdelim) (srfi srfi-1))
 (use-modules (editor engine) (editor render) (editor repl) (editor scsh)
-             (editor history) (editor properties))
+             (editor history) (editor properties) (editor textline))
 
 (define failures '())
 (define (contains? text s) (if (string-contains text s) #t #f))
@@ -219,11 +219,48 @@
        0 (history-search "hello" 0))
 (check "search: and the exact case still finds it" 0 (history-search "Hello" 0))
 
+;;; ---- a value line survives the file round trip with its marker ---------------
+;;; ,car is the file's own spelling for a value line: the writer spells it
+;;; with the marker, the load reads it back, the item recalls as it was and
+;;; commits as the value.
+
+(history-file (string-append tmp ".5"))
+(history-clear!)
+(history-add! (datum->tree '(unquote car)))
+(check "file: a value line is spelled with its marker"
+       ",car" (let* ((p (open-input-file (string-append tmp ".5")))
+                     (l (read-line p)))
+                (close-port p) l))
+(history-load!)
+(check "recall: the reloaded value line renders as it was saved"
+       ",car" (render-tree (car (history-items))))
+(check "commit: and it commits as the value"
+       'car (line-datum (tree->sexp (car (history-items)))))
+
+;;; ---- a ! line survives the file round trip verbatim --------------------------
+;;; (! "ls -l") is the file's spelling: the command is a literal string, never
+;;; Scheme, and the reloaded item recalls as it was saved.
+
+(history-file (string-append tmp ".6"))
+(history-clear!)
+(history-add! '("!" "ls -l >f"))
+(check "file: a ! line is the readable datum (! \"...\")"
+       "(! \"ls -l >f\")"
+       (let* ((p (open-input-file (string-append tmp ".6")))
+              (l (read-line p)))
+         (close-port p) l))
+(history-load!)
+(check "recall: the reloaded ! line renders as it was saved"
+       "!ls -l >f" (render-tree (car (history-items))))
+(check "commit: and it is still the bourne marker hugging the string"
+       #t (bourne-tree? (car (history-items))))
+
 ;;; ---- verdict ------------------------------------------------------------------
 
 (for-each (lambda (f) (when (file-exists? f) (delete-file f)))
           (list tmp (string-append tmp ".2") (string-append tmp ".3")
-                (string-append tmp ".4")))
+                (string-append tmp ".4") (string-append tmp ".5")
+                (string-append tmp ".6")))
 (newline)
 (if (null? failures)
     (begin (display "ALL CHECKS PASSED") (newline) (exit 0))

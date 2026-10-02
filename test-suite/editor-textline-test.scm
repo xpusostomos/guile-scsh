@@ -22,16 +22,24 @@
 
 ;;; a session: KEYS over a line that starts as INITIAL, with a clean history
 ;;; built from TREES.  Nothing is drawn.
+(define *frames* '())
+
 (define (session keys initial . trees)
   (history-file #f)
   (history-clear!)
   (for-each history-add! trees)
+  (set! *frames* '())
   (text-loop (lambda ()
                (let ((k (if (pair? keys) (car keys) 'enter)))
                  (when (pair? keys) (set! keys (cdr keys)))
                  k))
              (lambda (buf pt) #f)
-             initial))
+             initial
+             ;; the search frames, oldest first, for the checks below
+             (lambda (q m f) (set! *frames* (cons (list q m f) *frames*)))))
+
+(define Cr (integer->char 18))
+(define Cg (integer->char 7))
 
 ;;; ---- typing, movement, deletion ----------------------------------------------
 
@@ -90,8 +98,33 @@
 (check "a quoted list reads through the reader"
        '(car (quote (1 2))) (tree->sexp (text-commit-tree "(car '(1 2))")))
 
+(check "a string literal survives the commit round trip"
+       '(display "hi") (tree->sexp (text-commit-tree "(display \"hi\")")))
+
+(check "and it renders with its quotes, so recall shows it as typed"
+       #t (and (string-contains (render-tree (text-commit-tree "(display \"hi\")"))
+                                "\"hi\"") #t))
+
 (check "a comment line says nothing"
        '() (text-commit-tree "; nothing here"))
+
+;;; ---- the ! escape: a line for the standard shell -----------------------------
+
+(check "a ! line is the marker hugging the verbatim command"
+       '("!" "ls -l >f") (text-commit-tree "!ls -l >f"))
+
+(check "the command is never read as Scheme -- pipes and all ride along"
+       '("!" "echo a | tr a b >out") (text-commit-tree "!echo a | tr a b >out"))
+
+(check "a ! line crosses as itself"
+       '("!" "echo hi") (text-carry-tree "!echo hi"))
+
+(check "it commits as the standard shell running the command"
+       (list 'run (list (bourne-shell) '-c "echo hi"))
+       (bourne-line-datum '("!" "echo hi")))
+
+(check "and it renders hugging its marker"
+       #t (and (string-contains (render-tree '("!" "ls -l")) "!ls -l") #t))
 
 (check "more than one form on a line is refused, not guessed at"
        '() (text-commit-tree "1 2"))
@@ -133,11 +166,81 @@
              (sexp->tree '(run (echo hi))))
   (check "UP at the oldest item stays put" "(run (echo hi))" text))
 
+;;; ---- C-r: the backward search, bash's keys -----------------------------------
+;;; The same search the structure editor runs: letters narrow, C-r steps one
+;;; match further back, backspace un-narrows, enter accepts the match as the
+;;; line, escape accepts and keeps editing, C-g aborts to the line as C-r
+;;; found it, and any other key accepts the match and runs as usual.
+
+;; the match lands in the buffer, and enter commits it
+(receive (text a)
+    (session (append (string->list "zzz") (list Cr #\e #\c #\h 'enter)) ""
+             (sexp->tree '(run (echo hi)))
+             (sexp->tree '(run (ls))))
+  (check "C-r narrows and enter takes the match"
+         "(run (echo hi))" text)
+  (check "  and commits" 'evaluate a))
+
+;; the frames show the narrowing: the last frame has the query and the match
+(receive (text a)
+    (session (append (string->list "zzz") (list Cr #\e 'escape 'enter)) ""
+             (sexp->tree '(run (echo)))
+             (sexp->tree '(run (echo hi))))
+  (check "C-r escape accepts and keeps editing"
+         "(run (echo hi))" text)
+  (check "  the frame showed the query and the match"
+         '("e" "(run (echo hi))" #f) (car *frames*)))
+
+;; C-r again walks back through the matches
+(receive (text a)
+    (session (append (string->list "zzz") (list Cr #\e 'enter)) ""
+             (sexp->tree '(run (echo)))
+             (sexp->tree '(run (echo hi))))
+  (check "C-r narrows to the newest match first"
+         "(run (echo hi))" text)
+  (receive (text a)
+      (session (append (string->list "zzz") (list Cr #\e Cr 'enter)) ""
+               (sexp->tree '(run (echo)))
+               (sexp->tree '(run (echo hi))))
+    (check "C-r C-r steps one match further back"
+           "(run (echo))" text)))
+
+;; a dead query: the frame is failed, with the query as its line, and enter
+;; keeps the line as C-r found it
+(receive (text a)
+    (session (append (string->list "zzz") (list Cr #\z #\z 'enter)) ""
+             (sexp->tree '(run (echo hi))))
+  (check "C-r on a dead query leaves the line as found" "zzz" text)
+  (check "  and the frame said failed, query as the line"
+         '("zz" #f #t) (car *frames*)))
+
+;; C-g aborts to the line as C-r found it
+(receive (text a)
+    (session (append (string->list "zzz") (list Cr #\e Cg 'enter)) ""
+             (sexp->tree '(run (echo hi))))
+  (check "C-g aborts to the line as found" "zzz" text))
+
+;; any other key accepts the match and runs as usual: a space after the
+;; accepted match is inserted at the point
+(receive (text a)
+    (session (append (string->list "zzz") (list Cr #\e #\space 'enter)) ""
+             (sexp->tree '(run (echo hi))))
+  (check "a key after the search accepts and then runs"
+         "(run (echo hi)) " text))
+
+;; backspace un-narrows: the query shrinks, and the match stays while it
+;; still matches -- a shorter query cannot unmatch the current item
+(receive (text a)
+    (session (append (string->list "zzz") (list Cr #\h #\i 'backspace 'enter)) ""
+             (sexp->tree '(run (echo hi))))
+  (check "backspace un-narrows, the match staying while it matches"
+         '("h" "(run (echo hi))" #f) (car *frames*))
+  (check "  and enter commits the still-matching line"
+         "(run (echo hi))" text))
+
 ;;; ---- verdict -----------------------------------------------------------------
 
 (unless (null? failures)
   (for-each (lambda (f) (display (string-append "FAILED: " f "\n"))) (reverse failures))
   (exit 1))
 (display "all textline checks pass\n")
-(check "a bare word crosses as the value line it is"
-       '("," "car") (text-carry-tree "car"))

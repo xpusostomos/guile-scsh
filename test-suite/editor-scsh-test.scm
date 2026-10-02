@@ -9,13 +9,16 @@
 ;;; operator took the key (the walker itself hides declining behind the
 ;;; fall-through, so these checks look one level down)
 (define (shell-operators tree locus key)
-  (let lp ((rs shell-rules))
+  ;; the same walk dispatch-key does: a row that declines via its HANDLE
+  ;; (the ! guard row does, for every non-! line) passes the key on
+  (let lp ((rs shell-rules) (tree tree) (locus locus))
     (if (null? rs)
         (values tree locus #f)
         (if ((rule-match (car rs)) key)
             (call-with-values (lambda () ((rule-handle (car rs)) tree locus key))
-              (lambda (t l a handled?) (values t l handled?)))
-            (lp (cdr rs))))))
+              (lambda (t l a handled?)
+                (if handled? (values t l #t) (lp (cdr rs) t l))))
+            (lp (cdr rs) tree locus)))))
 
 
 
@@ -218,6 +221,34 @@
     (shell-operators (sexp->tree '(run (| (epf (wc) (> f)) (grep))))
                      (make-locus '(1 1 2) 1 1) #\|)
   (check "| beside an epf stage opens after it"   "(run (| (epf (wc) (> f)) () (grep)))" (render-tree t)))
+
+;;; ---- ! a line for the standard shell ------------------------------------------
+;;; On an empty line ! opens the bourne line: one verbatim command string.
+;;; The operator keys are just characters inside it -- the "insert the char"
+;;; table the trigger switches to, as one guard row.
+
+(receive (t l taken?) (seed #\!)
+  (check "! opens a bourne line"                '("!" "") t)
+  (check "! puts the locus in the command"      '(() 1 0) l)
+  (check "! is taken as the trigger"            #t taken?))
+
+(receive (t l handled)
+    (shell-operators '("!" "") (make-locus '() 1 0) #\|)
+  (check "! keeps | a character"                #t handled)
+  (check "  the tree still the one command string" '("!" "|") t))
+
+(receive (t l handled)
+    (shell-operators '("!" "") (make-locus '() 1 0) #\space)
+  (check "! keeps the space inside the command" '("!" " ") t))
+
+(receive (t l handled)
+    (shell-operators '("!" "echo hi") (make-locus '() 1 7) #\;)
+  (check "! keeps ; a character, not a begin"   '("!" "echo hi;") t)
+  (check "  still bourne"                       #t (bourne-tree? t)))
+
+(check "! commits as the standard shell running the command"
+       (list 'run (list (bourne-shell) '-c "echo hi"))
+       (bourne-line-datum '("!" "echo hi")))
 
 ;;; ---- &  background, and back again -------------------------------------------
 

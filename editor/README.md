@@ -35,7 +35,14 @@ There are exactly two kinds of edit:
   of the begin body's toplevel slots).  **ESC** switches the shell to the
   *unstructured* line editor (`editor/textline.scm`) — a plain text line with
   readline-style keys (characters insert at the point, backspace/delete,
-  left/right/home/end, UP/DOWN recall the same history, C-c aborts the line,
+  left/right/home/end, UP/DOWN recall the same history, **C-r** is the same
+  backward search the structure editor runs — the frame is
+  `(reverse-i-search)`query: match`` with only the matched span in reverse
+  video, letters narrow, C-r steps one match further back, backspace
+  un-narrows, enter accepts the match as the line, escape accepts and keeps
+  editing, C-g aborts to the line as C-r found it, any other key accepts the
+  match and runs — the matched line is the item's rendering, so it re-reads),
+  C-c aborts the line,
   C-d ends the shell on an empty line and deletes forward otherwise) — and
   back again.  The switch is persistent until ESC is pressed once more, and the
   half-typed line crosses over: a tree crosses as its rendering, text crosses
@@ -46,7 +53,19 @@ There are exactly two kinds of edit:
   scsh way, `(run (ls -l))`; a bare word commits as the value it names
   (`car` shows `$1 = #<procedure car …>`, carried in the tree as the comma
   marker `,car`); more than one form on a line, or a line that does not read,
-  commits nothing and says so.  Values print REPL-style, numbered:
+  commits nothing and says so.  A line starting with **`!`** is the escape to
+  the standard shell: the rest of the line, verbatim, goes to
+  `sh -c "..."` — the `'bourne-shell` property names the shell, defaulting to
+  `/bin/bash` when it exists, else `/bin/sh`.  On startup the shell reads an
+  init file — `$XDG_CONFIG_HOME/scsh/init.scm` when that variable is set,
+  else `~/.config/scsh/init.scm`, else the old `~/.scsh` — plain Scheme,
+  loaded with guile's own `load` before the first prompt, where it can set
+  `scsh-properties`, define things, anything a Scheme file can; an error
+  stops it where it happened, is reported, and the shell starts anyway.
+  It commits as
+  `(run (SH -c "..."))` — the same foreground machinery any command gets — and
+  the history stores it as the readable datum `(! "ls -l")`, never Scheme;
+  recall brings back `!ls -l` and it runs the same way again.  Values print REPL-style, numbered:
   `$N = value`.  The prompt names the editor: the
   `'prompt` property is a string (used in both modes) or a lambda, called
   fresh before every line with `#:text` telling it which editor is asking

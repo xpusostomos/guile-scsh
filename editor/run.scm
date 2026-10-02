@@ -14,7 +14,7 @@
 (use-modules (ice-9 receive))
 (use-modules (editor engine) (editor render) (editor repl) (editor scsh)
              (editor job) (editor term) (editor history) (editor properties)
-             (editor textline))
+             (editor textline) (editor init))
 (use-modules (scsh syntax) (scsh scsh) (scsh procobj) (scsh run-extras) (scsh glob))
 
 ;;; the prompt is the 'prompt property, re-read before every line -- a string
@@ -29,9 +29,25 @@
 ;;; the printer, which always handles.  It is passed through the whole
 ;;; machinery, so a program using the editor can supply its own instead.
 (define escape-rule
-  (rule (lambda (k) (eq? k 'escape))
+  (make-rule (lambda (k) (eq? k 'escape))
         (lambda (t l k) (values t l 'text #t))))
-(define key-table (cons escape-rule (append shell-rules core-rules)))
+;;; the interactive shell's signal keys: C-c aborts the line (a fresh prompt),
+;;; never the shell.  C-z at the prompt is inert, as bash's is: bash suspends
+;;; a JOB, and ^Z at the prompt with no job does nothing -- the line stays,
+;;; editing continues (our terminal is raw, so ^Z arrives as a character and
+;;; the printer drops it; no rule is needed).
+(define interrupt-rule
+  (make-rule (lambda (k) (eq? k 'interrupt))
+        (lambda (t l k) (values t l 'abort-line #t))))
+(define key-table
+  (cons escape-rule (cons interrupt-rule (append shell-rules core-rules))))
+
+;;; SIGTSTP is ignored, plainly: the shell is what manages stopped jobs, and
+;;; a shell that could itself become one would have no one left to manage it
+;;; -- bash ignores the terminal-generated ^Z at the prompt and an external
+;;; kill -TSTP alike.  Only the jobs stop.
+(define (install-signal-handlers!)
+  (sigaction SIGTSTP SIG_IGN))
 
 ;;; which editor the next line opens in.  ESC switches, for the line being
 ;;; typed and every line after, until it is pressed again: the structured
@@ -49,19 +65,23 @@
 ;;; line crosses over half-typed, a tree into text (its rendering) and text
 ;;; back into a tree (the guesser).  Returns (values tree action) with action
 ;;; one of evaluate / continue / exit / interrupt.
+;;; one line in text mode: C-z suspends the shell (with job control on), and
+;;; is ignored with it off -- the line keeps being edited either way
+(define (edit-text text)
+  (receive (text* action)
+      (text-line #:prompt (scsh-prompt #:text #t) #:initial text)
+    (cond ((eq? action 'structured)
+           (set! *text-editing?* #f)
+           (let ((t (text-carry-tree text*)))
+             (edit-one t (make-locus '() (length t) 0))))
+          ((eq? action 'evaluate)
+           (values (text-commit-tree text*) 'evaluate))
+          ((eq? action 'interrupt) (values '() 'interrupt))
+          (else (values '() 'exit)))))
+
 (define (edit-one tree locus)
   (if *text-editing?*
-      (receive (text action)
-          (text-line #:prompt (scsh-prompt #:text #t)
-                     #:initial (render-tree tree))
-        (cond ((eq? action 'structured)
-               (set! *text-editing?* #f)
-               (let ((t (text-carry-tree text)))
-                 (edit-one t (make-locus '() (length t) 0))))
-              ((eq? action 'evaluate)
-               (values (text-commit-tree text) 'evaluate))
-              ((eq? action 'interrupt) (values '() 'interrupt))
-              (else (values '() 'exit))))
+      (edit-text (render-tree tree))
       (receive (t l action)
           (edit-line tree locus #:prompt (scsh-prompt)
                      #:seed seed #:rules key-table)
@@ -78,7 +98,12 @@
 ;;; a job that reads it is stopped by the kernel (SIGTTIN) -- bash's behaviour.
 ;;; With job control off, both go through scsh's own run/& as before.
 (define (commit tree)
-  (let ((x (line-datum (tree->sexp tree))))
+  ;; a ! line (text mode's shell escape, or one carried over) commits as
+  ;; (run (SH -c "...")): the verbatim string goes to the standard shell,
+  ;; through the same foreground machinery any command gets
+  (let ((x (if (bourne-tree? tree)
+               (bourne-line-datum tree)
+               (line-datum (tree->sexp tree)))))
     (if (and (job-control?) (pair? x) (memv (car x) '(run &)))
         (let ((job (job-start (lambda ()
                                 (eval (cons 'exec-epf (cdr x))
@@ -113,7 +138,9 @@
 ;;; Before each prompt, see how the jobs are doing: that is where a background
 ;;; job's "Done" or "Stopped" is noticed and reported.
 (define (main)
+  (load-init)                         ; the user's init: properties, defines
   (history-load!)                     ; the previous session's lines come back
+  (install-signal-handlers!)
   (ignore-terminal-stop!)             ; we point the terminal at jobs and back
   (call-with-restored-terminal        ; and we never leave it raw, however we go
    (lambda ()
@@ -123,8 +150,9 @@
        (receive (tree locus) (fresh)
          (receive (done action) (edit-one tree locus)
            (cond
-             ((eq? action 'interrupt) (loop))     ; ^C in text mode: a fresh line
-             ((not (eq? action 'evaluate)) (display "bye") (newline)) ; EOF, ^C
+             ;; ^C aborts the line, in either editor: a fresh prompt
+             ((or (eq? action 'interrupt) (eq? action 'abort-line)) (loop))
+             ((not (eq? action 'evaluate)) (display "bye") (newline)) ; EOF
              ((null? done) (loop))                    ; a blank line: nothing to run
              (else
               (catch #t

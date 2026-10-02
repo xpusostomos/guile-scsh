@@ -13,7 +13,8 @@
 ;;; see it forever empty; through a procedure the read is live.
 
 (define-module (editor properties)
-  #:export (scsh-properties scsh-property scsh-property-set! scsh-prompt))
+  #:export (scsh-properties scsh-property scsh-property-set! scsh-prompt
+            bourne-shell))
 
 ;;; the alist, most recent property first
 (define *scsh-properties* '())
@@ -49,3 +50,12 @@
              (lambda args (p))))
           ((string? p) p)
           (else (if text "scsh> " "scsh$ ")))))
+
+;;; (bourne-shell) -- the shell a ! line goes to: the 'bourne-shell property
+;;; when it is a string, else /bin/bash when it exists, else /bin/sh (which
+;;; presumably always exists).
+(define (bourne-shell)
+  (let ((p (scsh-property 'bourne-shell)))
+    (cond ((string? p) p)
+          ((file-exists? "/bin/bash") "/bin/bash")
+          (else "/bin/sh"))))

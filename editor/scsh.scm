@@ -10,7 +10,9 @@
   #:use-module (srfi srfi-1)
   #:use-module (editor engine)
   #:use-module (editor repl)     ; rule, the key-table row
-  #:export (seed line-datum shell-rules job-control?))
+  #:use-module (editor properties)  ; bourne-shell, the ! escape's shell
+  #:export (seed line-datum shell-rules job-control?
+            bourne-tree? bourne-line-datum))
 
 ;;; ---- small list helpers ----------------------------------------------------
 
@@ -39,6 +41,21 @@
       *job-control?*
       (begin (set! *job-control?* (car maybe-new)) *job-control?*)))
 
+;;; ---- the ! escape: a line for the standard shell ----------------------------
+;;; A line headed by ! is one verbatim command string for the standard shell
+;;; (the 'bourne-shell property, defaulting to /bin/bash or /bin/sh): the
+;;; tree is the marker word ! hugging the command -- ("!" "ls -l") renders
+;;; "!ls -l" -- the history stores it as the readable datum (! "ls -l"), and
+;;; committing turns it into (run (SH -c "...")), the same foreground
+;;; machinery any command gets.
+
+(define (bourne-tree? tree)
+  (and (pair? tree) (pair? (cdr tree)) (null? (cddr tree))
+       (string? (car tree)) (string=? (car tree) "!")))
+
+(define (bourne-line-datum tree)
+  (list 'run (list (bourne-shell) '-c (cadr tree))))
+
 ;;; ---- what a line starts as -------------------------------------------------
 ;;; A shell line begins with a command, so the first word opens (run ()) with
 ;;; the locus inside the command form.
@@ -55,6 +72,9 @@
 (define (seed key)
   (cond ((char=? key #\() (values (list "") '(() 0 0) #t))
         ((char=? key #\)) (values '() '(() 0 0) #t))
+        ;; ! opens the bourne-shell line: the cursor lands in the command
+        ;; string, and the shell operators keep their hands off it
+        ((char=? key #\!) (values (list "!" "") '(() 1 0) #t))
         ((char=? key #\,) (values '() '(() 0 0) #f))
         (else               (values (sexp->tree '(run ())) '((1) 0 0) #f))))
 
@@ -422,7 +442,7 @@
 ;;; it.  The guards live in the operators themselves (pipe/redirect/background
 ;;; answer HANDLED?).
 (define (shell-op-rule char op)
-  (rule (lambda (k) (eq? k char))
+  (make-rule (lambda (k) (eq? k char))
         (lambda (tree locus key)
           (if (not (shell-line? tree))
               (values tree locus 'continue #f)
@@ -431,6 +451,18 @@
                   (values t l 'continue handled?)))))))
 
 (define shell-rules
-  (list (shell-op-rule #\| pipe)
-        (shell-op-rule #\> redirect)
-        (shell-op-rule #\& background)))
+  (list
+   ;; on a ! line the operator keys are just characters: the command is one
+   ;; verbatim string, so they insert like any other key -- the "insert the
+   ;; char" table the ! trigger switches to, one row instead of a table swap
+   (make-rule (lambda (k) (and (char? k) (memv k '(#\| #\> #\& #\; #\( #\) #\! #\space))))
+              (lambda (tree locus key)
+                (if (bourne-tree? tree)
+                    ;; insert-char* -- the space stays INSIDE the command
+                    ;; string; the word never splits
+                    (receive (t2 l2) (insert-char* tree locus key)
+                      (values t2 l2 'continue #t))
+                    (values tree locus 'continue #f))))
+   (shell-op-rule #\| pipe)
+   (shell-op-rule #\> redirect)
+   (shell-op-rule #\& background)))
