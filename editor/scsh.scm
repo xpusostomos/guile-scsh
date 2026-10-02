@@ -178,6 +178,12 @@
                          (else e)))
        (drop-trailing-empties els)))
 
+;;; what a form should not carry when it is restructured: the trailing empty
+;;; WORD tidy already handles, and the empty FORM a fresh stage leaves behind
+;;; (the () you were about to type into, in a pipe or an and/or list)
+(define (drop-empty-tails els)
+  (reverse (drop-while null? (reverse (tidy els)))))
+
 ;;; a pipeline absorbs the redirections that trail it: they aim at its end,
 ;;; which is its last stage, so that stage wraps in an epf carrying them --
 ;;; or they join an epf that is already there.  The caller drops the trailed
@@ -236,9 +242,9 @@
                 (head (and (pair? parent) (string? (car parent)) (car parent)))
                 (me (list-ref parent (last p)))
                 (me-head (and (pair? me) (string? (car me)) (car me))))
-           (or (string=? head "|")
-               (member head '("run" "&"))
-               (string=? me-head "|")
+           (or (member head '("|" "||"))
+               (member head '("run" "&" "&&"))
+               (member me-head '("|" "||"))
                (redir-form? me))))))
 
 (define (up-target tree locus)
@@ -250,26 +256,118 @@
   (let ((p (locus-path locus)))
     (if (null? p)
         (let ((head (and (pair? tree) (string? (car tree)) (car tree))))
-          (if (member head '("run" "&"))
-              (make-locus '(1) (length (container-at tree '(1))) 0)
-              #f))
+          (cond ((member head '("run" "&"))
+                 (make-locus '(1) (length (container-at tree '(1))) 0))
+                ;; a top-level &&/|| list: the line's end is its LAST stage
+                ((member head '("&&" "||"))
+                 (let ((n (- (length tree) 1)))
+                   (and (> n 0)
+                        (make-locus (list n) (length (container-at tree (list n))) 0))))
+                (else #f)))
         (let lp ((k (length p)))
           (if (zero? k)
               #f
               (let* ((q (list-head p k))
                      (parent (container-at tree (butlast q)))
                      (head (and (pair? parent) (string? (car parent)) (car parent))))
-                (if (member head '("|" "run" "&"))
+                (if (member head '("|" "||" "run" "&" "&&"))
                     (make-locus q (length (container-at tree q)) 0)
                     (lp (- k 1)))))))))
 
+;;; ---- the | key: opening stages, and cycling the operator --------------------
+;;; | is a PROCESS-FORM operator: a pipe lives inside a run/& wrapper, as
+;;; (run (| a b)).  || is a TOP-LEVEL line head, like && -- scsh's or-list
+;;; (or (zero? (run pf)) ...).  So pressing | on a pipe's head word, or in one
+;;; of its empty stages, advances the operator instead of opening a stage:
+;;;
+;;;   (run (| (ls) ()))   ->  (|| (ls) ())    ->  (run (ls))           [empty last]
+;;;   (run (| (ls) (wc)))  ->  (|| (ls) (wc))  ->  (run (| (ls) (wc))) [non-empty]
+;;;
+;;; becoming an or drops the run wrapper (|| stands on its own); coming back
+;;; restores it, since | has to sit inside a process form.
+
+(define (or-form? e)
+  (and (pair? e) (string? (car e)) (string=? (car e) "||")))
+
+(define (pipe-or? e) (or (pipeline? e) (or-form? e)))
+
+;;; the pipe/or form the cursor is positioned to advance: on its head word, or
+;;; inside one of its empty stages.  returns the form's PATH, else #f
+(define (advanceable-pipe tree locus)
+  (let* ((p    (locus-path locus))
+         (i    (locus-index locus))
+         (cont (container-at tree p)))
+    (cond
+      ((and (pipe-or? cont) (= i 0)) p)                        ; on the head word
+      ((and (pipe-or? cont) (< i (length cont))                ; on an empty stage
+            (null? (list-ref cont i)))
+       p)
+      ((and (pair? p) (null? cont)                             ; inside one
+            (pipe-or? (container-at tree (butlast p))))
+       (butlast p))
+      (else #f))))
+
+;;; the locus, which sat at pipe form OP, moved to where OP now lives (NEWPATH)
+(define (pipe-relocus locus op newpath)
+  (if (equal? (locus-path locus) op)
+      (make-locus newpath (locus-index locus) (locus-offset locus))
+      (make-locus (append newpath (list-tail (locus-path locus) (length op)))
+                  (locus-index locus) (locus-offset locus))))
+
+(define (advance-pipe tree locus op)
+  (let* ((form (container-at tree op))
+         (head (car form))
+         (n    (length form)))
+    (if (string=? head "|")
+        ;; | -> ||: the or-form is top level, so it leaves the run wrapper
+        (let* ((form*  (list-replace form 0 "||"))
+               (pp     (butlast op))
+               (parent (container-at tree pp))
+               (phead  (and (pair? parent) (string? (car parent)) (car parent)))
+               (lift?  (and phead (string=? phead "run"))))
+          (if lift?
+              (if (null? pp)
+                  ;; the run wrapper IS the line: the or-form replaces it
+                  (values form* (pipe-relocus locus op pp) #t)
+                  (let* ((gp  (butlast pp)) (gi (last pp))
+                         (gpc (container-at tree gp)))
+                    (values (with-container tree gp (list-replace gpc gi form*))
+                            (pipe-relocus locus op pp)
+                            #t)))
+              (values (with-container tree op form*)
+                      (pipe-relocus locus op op)
+                      #t)))
+        ;; || -> back.  An empty last stage collapses to the single command,
+        ;; wrapped in run again; otherwise the | pipe comes back inside run
+        (if (null? (list-ref form (- n 1)))
+            (let* ((run* (list "run" (list-ref form 1)))
+                   (tree* (with-container tree op run*)))
+              (values tree*
+                      (make-locus (append op (list 1))
+                                  (length (container-at tree* (append op (list 1))))
+                                  0)
+                      #t))
+            (let ((run* (list "run" (list-replace form 0 "|"))))
+              (values (with-container tree op run*)
+                      (make-locus (append op (list 1)) 0 0)
+                      #t))))))
+
 (define (pipe tree locus)
-  (if (pipe-handled? tree locus)
-      (pipe-at tree locus)
-      (let ((target (up-target tree locus)))
-        (if target
-            (pipe-at tree target)
-            (values tree locus 'continue #f)))))
+  (let ((op (advanceable-pipe tree locus)))
+    (cond
+      (op (advance-pipe tree locus op))
+      ;; at the very end of a top-level || line there is no parent form for
+      ;; pipe-at to splice into: the line itself grows a stage
+      ((and (or-form? tree) (null? (locus-path locus))
+            (= (locus-index locus) (length tree)))
+       (let* ((ts (drop-empty-tails tree)) (n (length ts)))
+         (values (append ts (list '())) (make-locus (list n) 0 0) #t)))
+      ((pipe-handled? tree locus) (pipe-at tree locus))
+      (else
+       (let ((target (up-target tree locus)))
+         (if target
+             (pipe-at tree target)
+             (values tree locus #f)))))))
 
 (define (pipe-at tree locus)
   (let ((p (locus-path locus)))
@@ -325,7 +423,7 @@
             ;; the pipeline itself is the form at the cursor: a stage joins it
             ;; -- unless redirections trail the pipeline, in which case they
             ;; aim at its end and move into the last stage first
-            ((and me-head (string=? me-head "|"))
+            ((and me-head (member me-head '("|" "||")))
              (if (pair? (redirs-after parent ci))
                  (let* ((redirs   (redirs-after parent ci))
                         (absorbed (absorb-redirs me redirs))
@@ -346,11 +444,11 @@
             ;; pipe grows in place -- never a pipe inside a pipe by accident.
             ;; On the LAST stage, redirections trailing the pipeline aim here:
             ;; they move into this stage before the fresh one opens beside it.
-            ((and parent-head (string=? parent-head "|"))
+            ((and parent-head (member parent-head '("|" "||")))
              (let* ((gp  (butlast pp))
                     (gi  (last pp))
                     (gpc (container-at tree gp)))
-               (if (and (= ci (- (length parent) 1))
+               (if (and (pair? pp) (= ci (- (length parent) 1))
                         (pair? (redirs-after gpc gi)))
                    (let* ((redirs   (redirs-after gpc gi))
                           (absorbed (absorb-redirs parent redirs))
@@ -409,9 +507,9 @@
                 (head (and (pair? parent) (string? (car parent)) (car parent)))
                 (me (list-ref parent (last p)))
                 (me-head (and (pair? me) (string? (car me)) (car me))))
-           (or (string=? head "|")
-               (member head '("run" "&" "begin"))
-               (string=? me-head "|")
+           (or (member head '("|" "||"))
+               (member head '("run" "&" "&&" "begin"))
+               (member me-head '("|" "||"))
                (redir-form? me))))))
 
 (define (redirect tree locus)
@@ -420,7 +518,7 @@
       (let ((target (up-target tree locus)))
         (if target
             (redirect-at tree target)
-            (values tree locus 'continue #f)))))
+            (values tree locus #f)))))
 
 (define (redirect-at tree locus)
   (let ((p (locus-path locus)))
@@ -433,9 +531,10 @@
                (parent (container-at tree pp))
                (parent-head (and (pair? parent) (string? (car parent)) (car parent))))
           (cond
-            ;; a stage of a pipeline: the redirect stays aimed at that stage
-            ((and parent-head (string=? parent-head "|"))
-             (if (= ci (- (length parent) 1))
+            ;; a stage of a pipeline (or of a top-level &&/|| list): the
+            ;; redirect stays aimed at that stage
+            ((and parent-head (member parent-head '("|" "||" "&&")))
+             (if (and (pair? pp) (= ci (- (length parent) 1)))
                  ;; the LAST stage: the pipeline's own end speaks for it --
                  ;; the redirect opens after the pipeline (stacking after any
                  ;; already there)
@@ -498,17 +597,30 @@
                             body
                             (append body (list (devnull))))))
              (values (cons "&" els) locus #t)))
+          ;; the & family cycles run -> & -> && -> run (&& is scsh's and-list:
+          ;; (and (zero? (run pf)) ...) -- a top-level line head like & and run)
           ((equal? head "&")
-           (values (cons "run" (remove (lambda (e) (equal? e (devnull)))
-                                       (tidy (cdr tree))))
-                   locus
-                   #t))
+           ;; && is a LIST of commands, so it opens an empty slot for the
+           ;; next one, with the cursor in it -- as | opens a fresh stage
+           (let* ((body (drop-empty-tails (cdr tree)))
+                  (new  (cons "&&" (append body (list '())))))
+             (values new (make-locus (list (- (length new) 1)) 0 0) #t)))
+          ((equal? head "&&")
+           ;; back to run, which holds ONE command: drop the empty trailing
+           ;; slot, and take the first command -- exactly the || -> run rule,
+           ;; since there is no inner & form to carry the rest into
+           (let* ((body (remove (lambda (e) (equal? e (devnull)))
+                                (drop-empty-tails (cdr tree))))
+                  (run* (if (null? body) (list "run") (list "run" (car body))))
+                  (loc* (if (null? body) locus (make-locus '(1) (length (car body)) 0))))
+             (values run* loc* #t)))
           (else (values tree locus #f)))))
 
 ;;; The shell's structural sugar is for shell lines only: in a plain Scheme form
 ;;; ("|" and friends are ordinary characters, and must be typed as such).
 (define (shell-line? tree)
-  (and (pair? tree) (string? (car tree)) (member (car tree) (list "run" "&"))))
+  (and (pair? tree) (string? (car tree))
+       (member (car tree) (list "run" "&" "&&" "||"))))
 
 ;;; ---- the shell's rows of the key table --------------------------------------
 ;;; Each operator is a RULE (see editor/repl.scm): it matches one character and
@@ -587,12 +699,18 @@
 ;;;
 ;;;      The word is taken whole (ls f*.c -> (run (ls ,@(glob "f*.c")))), a
 ;;;      second star inside the pattern is just a character (globs have
-;;;      many), and so is a * inside a quoted word.  Anywhere the splice
-;;;      would not be legal or the place is not clear -- outside a shell
-;;;      line, at the run form's own level, inside a pipeline, a
-;;;      redirection, a begin without a run in it -- the * self-inserts.
+;;;      many), and so is a * inside a quoted word.
+;;;
+;;;      The splice is legal wherever the process notation's implicit
+;;;      backquote applies (doc/process-notation.scribble): a command's
+;;;      argument list, however deeply the command is nested -- in a run, a
+;;;      &, an &&, an ||, a pipe, or an epf.  So it globs inside a command in
+;;;      (|| (epf (ls) (> foo)) ...) just as at the prompt.  Everywhere else
+;;;      the * self-inserts: outside a shell line, at a run/pipe/&&/|| form's
+;;;      own level (not a command), inside a redirection (one file-name
+;;;      slot, which a splice cannot fill), in a begin holding no run.
 
-(define structural-heads '("|" ">" ">>" "<" "<<" "epf" "begin" "run" "&"))
+(define structural-heads '("|" "||" "&&" ">" ">>" "<" "<<" "epf" "begin" "run" "&"))
 
 (define (command-form? tree path)
   ;; the form the cursor is in takes a plain word for its head, and is not
@@ -613,8 +731,8 @@
         (let* ((form (container-at tree (list-head path k)))
                (head (and (pair? form) (car form))))
           (cond ((not (string? head)) #f)
-                ((member head '("run" "&")) (lp (+ k 1) #t))
-                ((member head '("begin" "|")) (lp (+ k 1) seen-process?))
+                ((member head '("run" "&" "&&" "||")) (lp (+ k 1) #t))
+                ((member head '("begin" "|" "epf" "|+")) (lp (+ k 1) seen-process?))
                 ((command-form? tree (list-head path k)) (lp (+ k 1) seen-process?))
                 (else #f))))))
 

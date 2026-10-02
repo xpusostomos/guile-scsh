@@ -8,7 +8,7 @@
 
 (use-modules (ice-9 receive) (srfi srfi-1))
 (use-modules (editor engine) (editor render) (editor history) (editor textline)
-             (editor scsh))
+             (editor scsh) (editor properties))
 
 (define failures '())
 

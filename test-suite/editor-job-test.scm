@@ -230,6 +230,12 @@
                             (else (lp)))))))))
     (and mask (not (zero? (logand mask (ash 1 (- n 1))))))))
 
+;; a caller's inherited dispositions are not ours to assume: bash ignores
+;; SIGTTIN/SIGTTOU in a command substitution and the child inherits them, so
+;; start from a known state before checking what ignore-terminal-stop! does
+(sigaction SIGTTIN SIG_DFL)
+(sigaction SIGTTOU SIG_DFL)
+
 (check "SigIgn does not yet include SIGTTOU" #f (signal-ignored? SIGTTOU))
 (ignore-terminal-stop!)
 (check "ignore-terminal-stop! ignores SIGTTOU" #t (signal-ignored? SIGTTOU))

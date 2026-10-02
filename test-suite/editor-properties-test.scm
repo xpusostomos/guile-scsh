@@ -7,7 +7,7 @@
 ;;; alist.  The alist itself is module-private -- (editor properties.scm) for
 ;;; why -- so visibility is checked through the procedures.
 
-(use-modules (editor properties))
+(use-modules (ice-9 optargs) (editor properties))
 
 (define failures '())
 
@@ -72,7 +72,7 @@
 
 (check "a lambda taking the keyword is told which editor asks"
        '("struct" "text")
-       (begin (scsh-property-set! 'prompt (lambda (#:key text)
+       (begin (scsh-property-set! 'prompt (lambda* (#:key text)
                                             (if text "text" "struct")))
               (list (scsh-prompt) (scsh-prompt #:text #t))))
 

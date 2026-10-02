@@ -283,23 +283,13 @@
   (check "* mid-word takes the whole word as the pattern"
          "(run (ls ,@(eglob f*oo)))" (render-tree t)))
 
-;; a second star inside the pattern is just a character: the rule declines
-;; and the printer inserts.  The state is the tree the first star built --
-;; the single ,@ word hugging the (eglob ...) form
-(receive (t l a)
-    (step (sexp->tree '(run (ls (",@" ("eglob" "a*b")))))
-          (make-locus '(1 1 1) 1 2) #\* seed (append shell-rules core-rules))
-  (check "* inside the pattern is a character"
-         "(run (ls ,@(eglob a*b*)))" (render-tree t)))
-
-;; a second star inside the pattern is just a character
-;; through the whole table: the rule declines and the printer inserts
-;; a second star inside the pattern is just a character: the rule declines
-;; and the printer inserts.  The state is the tree ls *.c builds -- built
-;; with list, since sexp->tree of a ,@ literal reads as splicing
+;; a second star inside the pattern is just a character, through the whole
+;; table: the rule declines and the printer inserts.  The state is the tree
+;; ls *.c builds -- built with list, since sexp->tree of a ,@ literal reads
+;; as splicing
 (receive (t l a)
     (step (list "run" (list "ls" (list ",@" (list "eglob" "*.c"))))
-          (make-locus '(1 1 1) 1 4) #\* seed (append shell-rules core-rules))
+          (make-locus '(1 1 1) 1 3) #\* seed (append shell-rules core-rules))
   (check "* inside the pattern is a character"
          "(run (ls ,@(eglob *.c*)))" (render-tree t)))
 
@@ -314,29 +304,58 @@
     (shell-operators (sexp->tree '(run (ls))) (make-locus '() 2 0) #\*)
   (check "* at the run form's own level is a character" #f handled))
 
+;; the epf is a process form too ((epf . epf) in doc/process-notation), so the
+;; implicit backquote runs on through it: a * inside a command wrapped in epf
+;; globs, wherever the line puts it -- an ||, an &&, a &, a run, a pipe
+(receive (t l handled)
+    (shell-operators (sexp->tree '(run (epf (ls) (> foo)))) (make-locus '(1 1) 1 0) #\*)
+  (check "* inside a command in an epf globs"     "(run (epf (ls ,@(eglob *)) (> foo)))" (render-tree t)))
+(receive (t l handled)
+    (shell-operators (sexp->tree '(|| (epf (ls) (> foo)) (epf (echo fail) (> bar))))
+                     (make-locus '(1 1) 1 0) #\*)
+  (check "* inside an epf in an || globs"
+         "(|| (epf (ls ,@(eglob *)) (> foo)) (epf (echo fail) (> bar)))" (render-tree t)))
+(receive (t l handled)
+    (shell-operators (sexp->tree '(&& (epf (ls) (> foo)) (bar))) (make-locus '(1 1) 1 0) #\*)
+  (check "* inside an epf in an && globs"         "(&& (epf (ls ,@(eglob *)) (> foo)) (bar))" (render-tree t)))
+(receive (t l handled)
+    (shell-operators (sexp->tree '(& (epf (ls) (> foo)))) (make-locus '(1 1) 1 0) #\*)
+  (check "* inside an epf in a & globs"           "(& (epf (ls ,@(eglob *)) (> foo)))" (render-tree t)))
+
+;; but the epf's own element level (between the pf and its redirections) is not
+;; a place a splice is meaningful, and neither is a bare Scheme begin
+(receive (t l handled)
+    (shell-operators (sexp->tree '(run (epf (ls) (> foo)))) (make-locus '(1 2) 0 0) #\*)
+  (check "* at the epf's own level is a character" #f handled))
+(receive (t l handled)
+    (shell-operators (sexp->tree '(begin (ls))) (make-locus '(1) 0 2) #\*)
+  (check "* in a bare Scheme begin is a character" #f handled))
+
 ;;; ---- > walks up the tree like | does ------------------------------------------
 ;;; Pressed deep inside a command -- a glob's pattern, mid-word -- the >
 ;;; attaches to the stage the cursor is inside, or to the command itself,
 ;;; instead of acting at the cursor's own level.
 
 (receive (t l handled)
-    (shell-operators (sexp->tree '(run (ls ("," "@") ("glob" "\"*.c\""))))
-                     (make-locus '(1 1 1) 1 5) #\>)
+    (shell-operators (list "run" (list "ls" (list ",@" (list "eglob" "*.c"))))
+                     (make-locus '(1 1 1) 1 2) #\>)
   (check "> inside the glob attaches to the command"
-         "(run (ls ,@(eglob *.c)) (> \"\"))" (render-tree t))
+         "(run (ls ,@(eglob *.c)) (> ))" (render-tree t))
   (check "  handled" #t handled))
 
 (receive (t l handled)
-    (shell-operators (sexp->tree '(run (| (ls ("," "@") ("glob" "\"*.c\"")) (wc))))
-                     (make-locus '(1 1 1) 1 5) #\>)
+    (shell-operators (list "run" (list "|"
+                                       (list "ls" (list ",@" (list "eglob" "*.c")))
+                                       (list "wc")))
+                     (make-locus '(1 1 1 1) 1 2) #\>)
   (check "> inside the glob in a pipeline epf-wraps the stage"
-         "(run (| (epf (ls ,@(eglob *.c)) (> \"\")) (wc)))" (render-tree t)))
+         "(run (| (epf (ls ,@(eglob *.c)) (> )) (wc)))" (render-tree t)))
 
 (receive (t l handled)
     (shell-operators (sexp->tree '(display 5)) (make-locus '(1) 0 1) #\>)
   (check "> outside a shell line is still a character" #f handled))
 
-;;; ---- &  background, and back again -------------------------------------------
+;;; ---- &  background, and the & family's cycle run -> & -> && -> run ---------
 
 ;;; with job control ON, & is just a background job: the kernel does the stopping
 (receive (t l handled)
@@ -346,7 +365,19 @@
 
 (receive (t l handled)
     (shell-operators (sexp->tree '(& (ls))) (make-locus '(1) 0 2) #\&)
-  (check "& again puts run back"                  "(run (ls))" (render-tree t)))
+  (check "& again makes it &&, opening a slot to type into"
+         "(&& (ls) ())" (render-tree t))
+  (check "  the cursor is in the empty slot"      '((2) 0 0) l))
+
+(receive (t l handled)
+    (shell-operators (sexp->tree '(&& (ls) ())) (make-locus '(1) 0 2) #\&)
+  (check "& again cycles back to run"             "(run (ls))" (render-tree t)))
+
+;; run holds one command, so a multi-command && collapses to its first
+(receive (t l handled)
+    (shell-operators (sexp->tree '(&& (ls) (wc))) (make-locus '(1) 0 2) #\&)
+  (check "& on a multi-command && takes the first" "(run (ls))" (render-tree t))
+  (check "  cursor lands at the command's end"     '((1) 1 0) l))
 
 ;;; with job control OFF, fall back to the POSIX rule for that case: /dev/null
 (job-control? #f)
@@ -356,6 +387,10 @@
          "(& (ls) (< /dev/null))" (render-tree t)))
 (receive (t l handled)
     (shell-operators (sexp->tree '(& (ls) (< /dev/null))) (make-locus '(1) 0 2) #\&)
+  (check "& again carries the /dev/null into &&"
+         "(&& (ls) (< /dev/null) ())" (render-tree t)))
+(receive (t l handled)
+    (shell-operators (sexp->tree '(&& (ls) (< /dev/null) ())) (make-locus '(1) 0 2) #\&)
   (check "& again takes the /dev/null away"       "(run (ls))" (render-tree t)))
 (job-control? #t)
 
@@ -364,27 +399,97 @@
   (check "& keeps an input redirection you wrote" "(& (ls) (< /tmp/in))" (render-tree t)))
 
 
+;;; ---- |  the pipe family's cycle: run-| <-> || <-> run ------------------------
+;;; Pressing | on a pipe's head, or in one of its empty stages, advances the
+;;; operator rather than opening a stage.  || is a top-level or-form, so it
+;;; sheds the run wrapper; | comes back inside one.
 
-;;; ---- at the start of a form, operators are just atoms --------------------------
-;;; (you are building the form by hand; | must not wrap anything)
+;; the fresh pipeline: | in the empty stage turns the pipe into an or
+(receive (t l handled)
+    (shell-operators (sexp->tree '(run (| (ls) ()))) (make-locus '(1 2) 0 0) #\|)
+  (check "| in an empty stage opens out into ||"  "(|| (ls) ())" (render-tree t))
+  (check "  the cursor is still in the empty stage" '((2) 0 0) l)
+  (check "  and it is handled"                    #t handled))
+
+;; an empty-last or collapses the rest of the way back to run
+(receive (t l handled)
+    (shell-operators (sexp->tree '(|| (ls) ())) (make-locus '(2) 0 0) #\|)
+  (check "| again on an empty-last || is plain run" "(run (ls))" (render-tree t)))
+
+;; moving the cursor onto the | word advances it too, and does NOT add a stage
+(receive (t l handled)
+    (shell-operators (sexp->tree '(run (| (ls) (wc)))) (make-locus '(1) 0 0) #\|)
+  (check "| on the | head makes it ||"            "(|| (ls) (wc))" (render-tree t))
+  (check "  the cursor sits on the || head"       '(() 0 0) l))
+
+(receive (t l handled)
+    (shell-operators (sexp->tree '(|| (ls) (wc))) (make-locus '() 0 0) #\|)
+  (check "| on the || head restores the run pipe" "(run (| (ls) (wc)))" (render-tree t))
+  (check "  the cursor sits on the | head"        '((1) 0 0) l))
+
+;; away from the head and the empty stage, | still opens a new stage
+(receive (t l handled)
+    (shell-operators (sexp->tree '(run (| (ls) (wc)))) (make-locus '(1 2) 0 2) #\|)
+  (check "| at the end of a stage still joins one" "(run (| (ls) (wc) ()))" (render-tree t)))
+
+;; a top-level || line has no run to wrap: | at its end grows the line itself
+(receive (t l handled)
+    (shell-operators (sexp->tree '(|| (ls) (wc))) (make-locus '() 3 0) #\|)
+  (check "| at the end of a || line adds a stage" "(|| (ls) (wc) ())" (render-tree t)))
+
+;; a top-level operator line has no parent for the "open after the pipeline"
+;; rule: | still joins a stage, and > wraps the cursor's stage in an epf
+;; carrying the redirect (a bare (> ) beside the stages is not a command)
+(receive (t l handled)
+    (shell-operators (sexp->tree '(|| (ls) (wc))) (make-locus '(2) 0 2) #\|)
+  (check "| on a || stage adds a stage"           "(|| (ls) (wc) ())" (render-tree t)))
+
+(receive (t l handled)
+    (shell-operators (sexp->tree '(|| (ls) (wc))) (make-locus '(2) 0 2) #\>)
+  (check "> on a || stage epf-wraps that stage"   "(|| (ls) (epf (wc) (> )))" (render-tree t)))
+
+(receive (t l handled)
+    (shell-operators (sexp->tree '(&& (ls) (wc))) (make-locus '(2) 0 2) #\>)
+  (check "> on a && stage epf-wraps that stage"   "(&& (ls) (epf (wc) (> )))" (render-tree t)))
+
+;; the cursor at the LINE's own end (path ()) is the same command: > aims at
+;; the last stage, | grows a stage -- neither may crash on a top-level list
+(receive (t l handled)
+    (shell-operators (sexp->tree '(|| (ls) (wc))) (make-locus '() 3 0) #\>)
+  (check "> at a || line's end epf-wraps the last stage"
+         "(|| (ls) (epf (wc) (> )))" (render-tree t)))
+
+
+
+;;; ---- deep inside a command, operators act at that command ----------------------
+;;; The cursor's own position is not what decides: anywhere inside a command --
+;;; its start, mid-word, inside a glob's pattern -- | and > walk up to the stage
+;;; or command the cursor is in and act there (pipe-handled? / up-target in
+;;; editor/scsh.scm).  The older "at a form's start an operator is just an atom"
+;;; rule is gone; this is what the epf rework settled on.
 
 (receive (t l handled)
     (shell-operators (sexp->tree '(run (ls))) (make-locus '(1) 0 0) #\|)
-  (check "| at the start of a form is just the atom" #f handled))
+  (check "| at the start of a command wraps that command"
+         "(run (| (ls) ()))" (render-tree t))
+  (check "  and is handled" #t handled))
 
 (receive (t l handled)
     (shell-operators (sexp->tree '(run ((ls) (wc)))) (make-locus '(1) 0 0) #\|)
-  (check "| at the start of a form whose first element is a form" #f handled))
+  (check "| at the start of a command whose first element is a form"
+         "(run (| ((ls) (wc)) ()))" (render-tree t)))
 
 (receive (t l handled)
     (shell-operators (sexp->tree '(run (ls))) (make-locus '(1) 0 0) #\>)
-  (check "> at the start of a form is just the atom" #f handled))
+  (check "> at the start of a command redirects that command"
+         "(run (ls) (> ))" (render-tree t)))
 
 ;;; ---- the guards ---------------------------------------------------------------
 
 (receive (t l handled)
     (shell-operators (sexp->tree '(run (ls))) (make-locus '(1) 0 1) #\|)
-  (check "| from the middle of a word is left alone" #f handled))
+  (check "| from the middle of a word still acts at the command"
+         "(run (| (ls) ()))" (render-tree t)))
 
 (receive (t l handled)
     (shell-operators (sexp->tree '(run ())) (make-locus '(1) 0 0) #\|)
