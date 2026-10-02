@@ -48,20 +48,33 @@
        #f (scsh-property 'completion-ignore-case))
 
 ;;; ---- the prompt ---------------------------------------------------------------
-;;; 'prompt is a string (the prompt as it stands) or a lambda (called for its
-;;; string -- the shell calls it fresh before every prompt); anything else,
-;;; including the property unset, is the default "scsh> ".
+;;; 'prompt is a string (the prompt in both modes) or a lambda (called fresh
+;;; before every prompt, with #:text saying which editor is asking: #f
+;;; structured, #t the unstructured text editor).  Unset defaults to
+;;; "scsh$ " structured and "scsh> " in text mode.
 
-(check "the prompt defaults to \"scsh> \""
-       "scsh> " (scsh-prompt))
+(check "the prompt defaults to \"scsh$ \" structured"
+       "scsh$ " (scsh-prompt))
+
+(check "and to \"scsh> \" in text mode"
+       "scsh> " (scsh-prompt #:text #t))
 
 (check "a string prompt is the prompt"
        "cash> " (begin (scsh-property-set! 'prompt "cash> ")
                        (scsh-prompt)))
 
+(check "the string is the prompt in text mode too"
+       "cash> " (scsh-prompt #:text #t))
+
 (check "a lambda prompt is called for its string"
        "lambda> " (begin (scsh-property-set! 'prompt (lambda () "lambda> "))
                          (scsh-prompt)))
+
+(check "a lambda taking the keyword is told which editor asks"
+       '("struct" "text")
+       (begin (scsh-property-set! 'prompt (lambda (#:key text)
+                                            (if text "text" "struct")))
+              (list (scsh-prompt) (scsh-prompt #:text #t))))
 
 (check "the lambda is called fresh each time"
        '("a> " "b> ")
@@ -71,8 +84,12 @@
                                        (list-ref '("a> " "b> ") (- n 1))))
          (list (scsh-prompt) (scsh-prompt))))
 
+(check "an older lambda without the keyword still works"
+       "plain> " (begin (scsh-property-set! 'prompt (lambda () "plain> "))
+                        (scsh-prompt #:text #t)))
+
 (check "a non-string non-lambda falls back to the default"
-       "scsh> " (begin (scsh-property-set! 'prompt 7)
+       "scsh$ " (begin (scsh-property-set! 'prompt 7)
                        (scsh-prompt)))
 
 ;;; ---- verdict ------------------------------------------------------------------

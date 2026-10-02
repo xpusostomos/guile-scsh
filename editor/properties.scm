@@ -35,12 +35,17 @@
         (set! *scsh-properties* (cons (cons sym value) *scsh-properties*))))
   value)
 
-;;; (scsh-prompt) -- the REPL prompt, from the 'prompt property: a string is
-;;; the prompt as it stands, a lambda is called for its string (fresh each
-;;; line, so the prompt can show the time or the cwd), and anything else --
-;;; the property unset -- is the default it has always been.
-(define (scsh-prompt)
+;;; (scsh-prompt #:text) -- the REPL prompt, from the 'prompt property.  A
+;;; lambda is CALLED, fresh each line, with #:TEXT saying which editor is
+;;; asking: #f structured, #t the unstructured line editor.  A string is the
+;;; prompt in both modes.  Unset (or any other type) defaults to "scsh$ " in
+;;; structured mode and "scsh> " in text mode.  A lambda that does not take
+;;; the keyword (an older (lambda () ...)) is called without it.
+(define* (scsh-prompt #:key text)
   (let ((p (scsh-property 'prompt)))
-    (cond ((string? p) p)
-          ((procedure? p) (p))
-          (else "scsh> "))))
+    (cond ((procedure? p)
+           (catch 'wrong-number-of-args
+             (lambda () (p #:text text))
+             (lambda args (p))))
+          ((string? p) p)
+          (else (if text "scsh> " "scsh$ ")))))

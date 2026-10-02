@@ -20,7 +20,7 @@
   #:use-module (editor render)
   #:use-module (editor properties)
   #:export (history-load! history-add! history-file history-previous history-next
-            history-reset! history-items history-clear! history-search))
+            history-reset! history-items history-clear! history-search datum->tree))
 
 ;;; the newest index <= FROM whose rendered line contains QUERY -- the backward
 ;;; search C-r walks; #f when nothing matches.  Inclusive of FROM, so narrowing

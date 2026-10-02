@@ -152,11 +152,12 @@
 
 (define (wait-char port)
   ;; the next character if it arrives promptly (as the rest of an escape
-  ;; sequence will), else #f
+  ;; sequence will), else #f -- 20 polls of 2ms, sleeping through select
+  ;; (guile's sleep wants an exact integer, and scsh's usleep is not ours)
   (let loop ((n 0))
     (cond ((char-ready? port) (read-char port))
           ((>= n 20) #f)
-          (else (sleep 0.002) (loop (+ n 1))))))
+          (else (select '() '() '() 0.002) (loop (+ n 1))))))
 
 (define (read-escape port)
   (let ((c1 (wait-char port)))

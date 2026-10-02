@@ -15,3 +15,4 @@ engine:
 	cd .. && guile -q -L . test-suite/editor-job-test.scm
 	cd .. && guile -q -L . test-suite/editor-history-test.scm
 	cd .. && guile -q -L . test-suite/editor-properties-test.scm
+	cd .. && guile -q -L . test-suite/editor-textline-test.scm
