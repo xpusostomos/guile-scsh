@@ -70,7 +70,10 @@
            (not (equal? (car node) ""))))
     (define (skip-root-cursor? i)
       (and (zero? i) (edge-cursor?)))
-    (let* ((bare? (and (null? path) (pair? node) (prefixed-word? (car node))))
+    ;; a form whose first word carries a marker prefix is the marker
+    ;; expression itself -- the comma value line, a nested ,@ splice -- and
+    ;; is drawn bare: its datum is what the marker fuses to
+    (let* ((bare? (and (pair? node) (prefixed-word? (car node))))
            (head (first-word node))
            (n (length node)))
       (let lp ((i 0) (words 0)

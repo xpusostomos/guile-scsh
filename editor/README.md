@@ -20,7 +20,17 @@ There are exactly two kinds of edit:
 
 - **atom edit** — type or backspace characters inside the current symbol
 - **struct edit** — every other key operates on nodes: `(` opens a form and steps
-  in, `)` leaves it, C-r is bash's backward search: each letter narrows the
+  in, `)` leaves it, `*` in a command position turns the word at the cursor into
+  the pattern of `,@(glob "...")` — the star lands inside it, so `ls *.c` becomes
+  `(run (ls ,@(glob "*.c")))` as you type.  The `|` smarts walk up the tree:
+  pressed anywhere inside a command — a glob's pattern, mid-word, wherever —
+  the pipe operates at the stage the cursor is inside, or at the command
+  itself, so `ls *.c<right>|` pipes past the glob — and the `>` walks the
+  same way, attaching to the stage/command the cursor is inside, so
+  `ls *.c<right>> out` redirects the whole command.  Anywhere the splice would
+  not be legal
+  (outside a shell line, in a redirection, at the run level) the `*` is just the
+  character, as it is inside the pattern itself.  C-r is bash's backward search: each letter narrows the
   match from the history, C-r steps one match further back, backspace
   un-narrows, escape accepts and keeps editing, RET accepts and commits, C-g
   aborts to the line as C-r found it, and any other key accepts the match and

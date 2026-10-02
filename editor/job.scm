@@ -89,7 +89,15 @@
                         (close-port upw)
                         (read-char dnr)                 ; park (EOF releases too)
                         (close-port dnr)
-                        (thunk)))))
+                        ;; an error inside the job -- eglob's "No match", a
+                        ;; bad form -- is said the way the prompt says it,
+                        ;; and fails the job; the shell itself continues
+                        (catch #t
+                          thunk
+                          (lambda (key . args)
+                            (display "error: ") (display key)
+                            (display " ") (display args) (newline)
+                            (exit 1)))))))
       ;; PARENT
       (close-port upw)
       (close-port dnr)

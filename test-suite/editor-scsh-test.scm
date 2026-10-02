@@ -3,7 +3,8 @@
 ;;;   make -C test-suite engine
 
 (use-modules (ice-9 receive) (ice-9 optargs) (srfi srfi-1))
-(use-modules (editor engine) (editor render) (editor repl) (editor scsh))
+(use-modules (editor engine) (editor render) (editor repl) (editor scsh)
+             (editor properties))
 
 ;;; the shell's rows, with the old decline protocol: HANDLED? tells whether an
 ;;; operator took the key (the walker itself hides declining behind the
@@ -249,6 +250,91 @@
 (check "! commits as the standard shell running the command"
        (list 'run (list (bourne-shell) '-c "echo hi"))
        (bourne-line-datum '("!" "echo hi")))
+
+;;; ---- * a glob in a command position -------------------------------------------
+;;; The word at the cursor becomes the UNQUOTED pattern of (eglob ...),
+;;; landing inside it at the cursor, so what is typed after extends the
+;;; pattern.  Anywhere the splice is not legal or the place unclear, the *
+;;; self-inserts.
+
+;; the user's case: ls *.c
+(receive (t l handled)
+    (shell-operators (sexp->tree '(run (ls ""))) (make-locus '(1) 1 0) #\*)
+  (check "* opens a glob"          "(run (ls ,@(eglob *)))" (render-tree t))
+  (check "  locus after the star"  '((1 1 1) 1 1) l)
+  (check "  handled"               #t handled))
+
+;; a whole line through the table: what is typed after extends the pattern,
+;; and the datum is the splicing form scsh's epf backquote evaluates
+(receive (t l a)
+    (let type ((tree '()) (locus (make-locus '() 0 0)) (keys (string->list "ls *.c")))
+      (if (null? keys) (values tree locus 'done)
+          (receive (t2 l2 action) (step tree locus (car keys) seed (append shell-rules core-rules))
+            (type t2 l2 (cdr keys)))))
+  (check "ls *.c through the table"
+         "(run (ls ,@(eglob *.c)))" (render-tree t))
+  (check "  and its datum splices"
+         '(run (ls (unquote-splicing (eglob *.c))))
+         (line-datum (tree->sexp t))))
+
+;; the word is taken whole, wherever the cursor is inside it
+(receive (t l handled)
+    (shell-operators (sexp->tree '(run (ls foo))) (make-locus '(1) 1 1) #\*)
+  (check "* mid-word takes the whole word as the pattern"
+         "(run (ls ,@(eglob f*oo)))" (render-tree t)))
+
+;; a second star inside the pattern is just a character: the rule declines
+;; and the printer inserts.  The state is the tree the first star built --
+;; the single ,@ word hugging the (eglob ...) form
+(receive (t l a)
+    (step (sexp->tree '(run (ls (",@" ("eglob" "a*b")))))
+          (make-locus '(1 1 1) 1 2) #\* seed (append shell-rules core-rules))
+  (check "* inside the pattern is a character"
+         "(run (ls ,@(eglob a*b*)))" (render-tree t)))
+
+;; a second star inside the pattern is just a character
+;; through the whole table: the rule declines and the printer inserts
+;; a second star inside the pattern is just a character: the rule declines
+;; and the printer inserts.  The state is the tree ls *.c builds -- built
+;; with list, since sexp->tree of a ,@ literal reads as splicing
+(receive (t l a)
+    (step (list "run" (list "ls" (list ",@" (list "eglob" "*.c"))))
+          (make-locus '(1 1 1) 1 4) #\* seed (append shell-rules core-rules))
+  (check "* inside the pattern is a character"
+         "(run (ls ,@(eglob *.c*)))" (render-tree t)))
+
+;; declines: outside a shell line, inside a redirection, at the run level
+(receive (t l handled)
+    (shell-operators (sexp->tree '(display 5)) (make-locus '(1) 0 1) #\*)
+  (check "* outside a shell line is a character" #f handled))
+(receive (t l handled)
+    (shell-operators (sexp->tree '(run (ls) (> foo))) (make-locus '(2) 1 1) #\*)
+  (check "* inside a redirection is a character" #f handled))
+(receive (t l handled)
+    (shell-operators (sexp->tree '(run (ls))) (make-locus '() 2 0) #\*)
+  (check "* at the run form's own level is a character" #f handled))
+
+;;; ---- > walks up the tree like | does ------------------------------------------
+;;; Pressed deep inside a command -- a glob's pattern, mid-word -- the >
+;;; attaches to the stage the cursor is inside, or to the command itself,
+;;; instead of acting at the cursor's own level.
+
+(receive (t l handled)
+    (shell-operators (sexp->tree '(run (ls ("," "@") ("glob" "\"*.c\""))))
+                     (make-locus '(1 1 1) 1 5) #\>)
+  (check "> inside the glob attaches to the command"
+         "(run (ls ,@(eglob *.c)) (> \"\"))" (render-tree t))
+  (check "  handled" #t handled))
+
+(receive (t l handled)
+    (shell-operators (sexp->tree '(run (| (ls ("," "@") ("glob" "\"*.c\"")) (wc))))
+                     (make-locus '(1 1 1) 1 5) #\>)
+  (check "> inside the glob in a pipeline epf-wraps the stage"
+         "(run (| (epf (ls ,@(eglob *.c)) (> \"\")) (wc)))" (render-tree t)))
+
+(receive (t l handled)
+    (shell-operators (sexp->tree '(display 5)) (make-locus '(1) 0 1) #\>)
+  (check "> outside a shell line is still a character" #f handled))
 
 ;;; ---- &  background, and back again -------------------------------------------
 

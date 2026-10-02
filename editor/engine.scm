@@ -629,7 +629,16 @@
           (else (string->symbol s)))))
 
 (define (element->sexp e)
-  (if (string? e) (leaf->datum e) (tree->sexp e)))
+  (cond ((string? e) (leaf->datum e))
+        ;; a marker-headed form ("," x) nested inside another form IS the
+        ;; marker expression -- ,x / ,@x -- its datum is the fused form with
+        ;; no line wrapper (the line's own tree->sexp adds that wrapper,
+        ;; which is what line-datum unwraps)
+        ((and (pair? e) (string? (car e)) (assoc (car e) *prefix-readers*)
+              (pair? (cdr e)) (null? (cddr e)))
+         (list (cdr (assoc (car e) *prefix-readers*))
+               (element->sexp (cadr e))))
+        (else (tree->sexp e))))
 
 (define (sexp->tree x)
   (cond ((null? x) '())

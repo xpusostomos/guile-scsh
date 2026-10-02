@@ -8,11 +8,13 @@
 (define-module (editor scsh)
   #:use-module (ice-9 receive)
   #:use-module (srfi srfi-1)
+  #:use-module (srfi srfi-13)    ; string-prefix?, string-contains
   #:use-module (editor engine)
   #:use-module (editor repl)     ; rule, the key-table row
   #:use-module (editor properties)  ; bourne-shell, the ! escape's shell
+  #:use-module (scsh glob)       ; glob, under eglob
   #:export (seed line-datum shell-rules job-control?
-            bourne-tree? bourne-line-datum))
+            bourne-tree? bourne-line-datum eglob))
 
 ;;; ---- small list helpers ----------------------------------------------------
 
@@ -220,7 +222,56 @@
 ;;;      otherwise                               -> the form becomes the first
 ;;;                                                 stage of a fresh pipeline
 ;;;         (run (ls -l))        |  ->  (run (| (ls -l) ()))
+;;; the cursor's own position is one the pipe cases address when it is at a
+;;; form end at the pipeline itself, at a stage, at the command, or on a
+;;; redirect -- anywhere deeper inside a command (a glob's pattern, between
+;;; a marker and its form, mid-word) is not, and neither is the line's own
+;;; root.  The pipe smarts walk up the tree to the stage the cursor is
+;;; inside -- else the command itself -- and operate there.
+(define (pipe-handled? tree locus)
+  (let ((p (locus-path locus)))
+    (and (pair? p)
+         (at-form-end? tree locus)
+         (let* ((parent (container-at tree (butlast p)))
+                (head (and (pair? parent) (string? (car parent)) (car parent)))
+                (me (list-ref parent (last p)))
+                (me-head (and (pair? me) (string? (car me)) (car me))))
+           (or (string=? head "|")
+               (member head '("run" "&"))
+               (string=? me-head "|")
+               (redir-form? me))))))
+
+(define (up-target tree locus)
+  ;; the stage the cursor is inside (the shallowest form whose parent is the
+  ;; pipeline), else the command itself (whose parent is the run) -- at its
+  ;; end; #f when the line offers neither (a begin without a run in it).
+  ;; The | and > smarts share it: pressed deep inside a command, both
+  ;; operate at the stage/command the cursor is in
+  (let ((p (locus-path locus)))
+    (if (null? p)
+        (let ((head (and (pair? tree) (string? (car tree)) (car tree))))
+          (if (member head '("run" "&"))
+              (make-locus '(1) (length (container-at tree '(1))) 0)
+              #f))
+        (let lp ((k (length p)))
+          (if (zero? k)
+              #f
+              (let* ((q (list-head p k))
+                     (parent (container-at tree (butlast q)))
+                     (head (and (pair? parent) (string? (car parent)) (car parent))))
+                (if (member head '("|" "run" "&"))
+                    (make-locus q (length (container-at tree q)) 0)
+                    (lp (- k 1)))))))))
+
 (define (pipe tree locus)
+  (if (pipe-handled? tree locus)
+      (pipe-at tree locus)
+      (let ((target (up-target tree locus)))
+        (if target
+            (pipe-at tree target)
+            (values tree locus 'continue #f)))))
+
+(define (pipe-at tree locus)
   (let ((p (locus-path locus)))
     (if (or (null? p)
             (not (at-form-end? tree locus))
@@ -347,7 +398,31 @@
 ;;; A second > stacks after the ones already there: scsh lets redirections
 ;;; accumulate, the later one winning for that fd (so a future (> 2 f) can
 ;;; sit beside a (> g)).
+(define (redirect-handled? tree locus)
+  ;; the cursor's own position is one the redirect cases address: at a form
+  ;; end at the pipeline, at a stage, at the command, on a redirect, or at a
+  ;; begin body slot.  Deeper inside a command is not -- the smarts walk up
+  (let ((p (locus-path locus)))
+    (and (pair? p)
+         (at-form-end? tree locus)
+         (let* ((parent (container-at tree (butlast p)))
+                (head (and (pair? parent) (string? (car parent)) (car parent)))
+                (me (list-ref parent (last p)))
+                (me-head (and (pair? me) (string? (car me)) (car me))))
+           (or (string=? head "|")
+               (member head '("run" "&" "begin"))
+               (string=? me-head "|")
+               (redir-form? me))))))
+
 (define (redirect tree locus)
+  (if (redirect-handled? tree locus)
+      (redirect-at tree locus)
+      (let ((target (up-target tree locus)))
+        (if target
+            (redirect-at tree target)
+            (values tree locus 'continue #f)))))
+
+(define (redirect-at tree locus)
   (let ((p (locus-path locus)))
     (if (or (null? p)
             (not (at-form-end? tree locus))
@@ -450,6 +525,130 @@
                 (lambda (t l handled?)
                   (values t l 'continue handled?)))))))
 
+;;; eglob -- glob with the shell's no-match policy.  The default is strict:
+;;; a pattern that matches nothing raises "No match".  nonomatch returns
+;;; unmatched patterns literally; nullglob returns nothing for them, plain
+;;; glob's behavior.  The modifiers are per-call symbol arguments and also
+;;; scsh-properties ('nonomatch / 'nullglob #t) -- a per-call symbol wins
+;;; over the property, and the last symbol on the call wins over an earlier
+;;; one.  Several patterns expand in order, each on its own policy.
+;;;
+;;; Like glob, eglob is a macro with an implicit quasiquote, so patterns can
+;;; be unquoted, shell-style: (eglob *.c) -- glob* stringifies the symbols.
+;;; The modifiers are spelled QUOTED -- (eglob 'nonomatch "*.c") -- inside
+;;; the quasiquote the quote arrives as the form (quote nonomatch), which is
+;;; what the check below recognizes; an unquoted nonomatch is a file name,
+;;; and quoting is what tells the two apart.
+
+(define (eglob-modifier? arg)
+  (and (pair? arg) (pair? (cdr arg)) (null? (cddr arg))
+       (eq? (car arg) 'quote)
+       (memq (cadr arg) '(nonomatch nullglob))))
+
+(define (eglob-modifier arg)
+  (cadr arg))
+
+(define (eglob-mode args)
+  (let lp ((args args) (mode #f))
+    (cond ((null? args)
+           (or mode
+               (cond ((scsh-property 'nonomatch) 'nonomatch)
+                     ((scsh-property 'nullglob) 'nullglob)
+                     (else 'nomatch))))
+          ((eglob-modifier? (car args)) (lp (cdr args) (eglob-modifier (car args))))
+          (else (lp (cdr args) mode)))))
+
+(define (eglob* args)
+  (let ((mode (eglob-mode args)))
+    (let loop ((args args) (out '()))
+      (cond ((null? args) out)
+            ;; a modifier: consumed by the mode, never a pattern
+            ((eglob-modifier? (car args)) (loop (cdr args) out))
+            (else
+             ;; glob* -- the procedure: stringify makes unquoted symbol
+             ;; patterns work
+             (let ((matches (glob* (car args))))
+               (cond ((pair? matches) (loop (cdr args) (append out matches)))
+                     ((eq? mode 'nonomatch)
+                      (loop (cdr args) (append out (list (car args)))))
+                     ((eq? mode 'nullglob) (loop (cdr args) out))
+                     (else (error "No match" (car args))))))))))
+
+
+(define-syntax eglob
+  (syntax-rules ()
+    ((_ rest ...) (eglob* `(rest ...)))))
+
+;;; *  : a glob in a command position.  The word at the cursor becomes the
+;;;      pattern of ,@(glob "..."), the star landing inside it at the cursor,
+;;;      so what you type after extends the pattern:
+;;;
+;;;      (run (ls))  +  * . c   ->  (run (ls ,@(glob "*.c")))
+;;;
+;;;      The word is taken whole (ls f*.c -> (run (ls ,@(glob "f*.c")))), a
+;;;      second star inside the pattern is just a character (globs have
+;;;      many), and so is a * inside a quoted word.  Anywhere the splice
+;;;      would not be legal or the place is not clear -- outside a shell
+;;;      line, at the run form's own level, inside a pipeline, a
+;;;      redirection, a begin without a run in it -- the * self-inserts.
+
+(define structural-heads '("|" ">" ">>" "<" "<<" "epf" "begin" "run" "&"))
+
+(define (command-form? tree path)
+  ;; the form the cursor is in takes a plain word for its head, and is not
+  ;; the glob form itself (the pattern is a string: a * there is a character)
+  (let ((head (and (pair? (container-at tree path))
+                   (car (container-at tree path)))))
+    (and (string? head) (not (string=? head ""))
+         (not (member head structural-heads))
+         (not (string-prefix? "," head))
+         (not (string=? head "eglob")))))
+
+(define (glob-context? tree path)
+  ;; the splice is legal where the cursor's form sits inside a run/& subtree
+  ;; (the epf's implicit backquote), below a shell line
+  (let lp ((k 0) (seen-process? #f))   ; k=0 is the root: the run itself
+    (if (> k (length path))
+        seen-process?
+        (let* ((form (container-at tree (list-head path k)))
+               (head (and (pair? form) (car form))))
+          (cond ((not (string? head)) #f)
+                ((member head '("run" "&")) (lp (+ k 1) #t))
+                ((member head '("begin" "|")) (lp (+ k 1) seen-process?))
+                ((command-form? tree (list-head path k)) (lp (+ k 1) seen-process?))
+                (else #f))))))
+
+(define (glob tree locus key)
+  (let ((p (locus-path locus)))
+    (if (or (null? p)
+            (not (glob-context? tree p))
+            (not (command-form? tree p)))
+        (values tree locus 'continue #f)
+        (let* ((form (container-at tree p))
+               (i (locus-index locus))
+               (off (locus-offset locus)))
+          (if (and (< i (length form))
+                   (sym? (list-ref form i))
+                   (not (string-contains (list-ref form i) "\"")))
+              ;; the word at the cursor is the whole pattern, star inside it;
+              ;; the pattern word spells itself with its quotes, so its datum
+              ;; is the string glob takes
+              (let* ((el (list-ref form i))
+                     ;; the pattern is an UNQUOTED word -- eglob is a macro
+                     ;; with glob's implicit quasiquote, and glob* stringifies
+                     (pattern (string-append (substring el 0 off)
+                                             "*"
+                                             (substring el off)))
+                     (g (list ",@" (list "eglob" pattern))))
+                (values (with-container tree p (list-replace form i g))
+                        (make-locus (append p (list 1 1)) 1 (+ off 1))
+                        'continue #t))
+              ;; between elements: a fresh glob, the cursor after its star
+              (let ((g (list ",@" (list "eglob" "*"))))
+                (values (with-container tree p (splice form i g))
+                        (make-locus (append p (list 1 1)) 1 1)
+                        'continue #t)))))))
+
 (define shell-rules
   (list
    ;; on a ! line the operator keys are just characters: the command is one
@@ -463,6 +662,7 @@
                     (receive (t2 l2) (insert-char* tree locus key)
                       (values t2 l2 'continue #t))
                     (values tree locus 'continue #f))))
+   (make-rule (lambda (k) (and (char? k) (char=? k #\*))) glob)
    (shell-op-rule #\| pipe)
    (shell-op-rule #\> redirect)
    (shell-op-rule #\& background)))
