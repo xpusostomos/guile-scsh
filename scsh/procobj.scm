@@ -302,7 +302,7 @@
     (cond ((car pid+status)
 	   (if (zero? (car pid+status))
 	       (values #f #f)		; None ready.
-	       (values (car pid+status (cdr pid+status)))))
+	       (values (car pid+status) (cdr pid+status))))
 	  (else
 	   (let ((errno (car (list-ref pid+status 5))))
 	     (if (= errno errno/child)
