@@ -7,7 +7,6 @@
 (define-module (scsh rdelim)
   :use-module (ice-9 rdelim)
   :use-module (srfi srfi-14)
-  :use-module (ice-9 regex)
   :use-module (scsh errno)
   :use-module (ice-9 optargs)
   :use-module (scsh optional)
@@ -307,9 +306,14 @@
 ;;; (read-paragraph [port handle-delim])
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-#;(define blank-line-regexp (make-regexp bos (* white) #\newline eos))
-(define blank-line-regexp (make-regexp "[ \t]*\n"))
-(define (regexp-search r l) (regexp-match? (regexp-exec r l)))
+;;; A line read with 'concat keeps its newline, so a blank line is nothing but
+;;; spaces and tabs before it -- and the newline has to be there, which is what
+;;; the "[ \t]*\n" this replaces insisted on.  (Upstream carried a regexp for
+;;; this too, commented out and built from Scheme 48's combinators.)
+(define (blank-line? line)
+  (and (positive? (string-length line))
+       (char=? #\newline (string-ref line (- (string-length line) 1)))
+       (string-every char-set:blank line 0 (- (string-length line) 1))))
 (define (read-paragraph . args)
   (let-optionals* args ((port         (current-input-port))
 		       (handle-delim 'trim))
@@ -319,14 +323,14 @@
 	(cond ((eof-object? line)
 	       (if (eq? handle-delim 'split) (values line line) line))
 
-	      ((regexp-match? blank-line-regexp line) (lp))
+	      ((blank-line? line) (lp))
 
 	      ;; Then, read in non-blank lines.
 	      (else
 	       (let lp ((lines (list line)))
 		 (let ((line (read-line port 'concat)))
 		   (if (and (string? line)
-			    (not (regexp-search? blank-line-regexp line)))
+			    (not (blank-line? line)))
 
 		       (lp (cons line lines))
 
