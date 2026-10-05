@@ -92,4 +92,9 @@
 		       (start   0)
 		       (end     (string-length s)))
 		 (generic-write-string s start end
-				       uniform-array-write fd/port)))
+				       ;; the writer must report how much it wrote:
+				       ;; generic-write-string advances by it
+				       (lambda (s port start end)
+					 (display (substring s start end) port)
+					 (- end start))
+				       fd/port)))
