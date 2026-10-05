@@ -16,12 +16,9 @@
 
   :export (fdport? set-port-buffering 
                    bufpol/block bufpol/line bufpol/none
-                   open-file ;;; open-input-file open-output-file
                    call/fdes close-after
                    with-current-input-port* with-current-output-port*
                    with-current-error-port*
-                   set-current-input-port! set-current-output-port!
-                   set-current-error-port!
                    with-error-output-port* with-error-output-port)
 
   :export-syntax (with-current-input-port with-current-output-port
@@ -62,7 +59,6 @@
 ;	 make-output-fdport)
 ;     fd 0)))
 
-(define open-file open)
 
 ;; (define (open-input-file fname . maybe-flags)
 ;;   (let ((flags (:optional maybe-flags 0)))
@@ -160,6 +156,3 @@
 ;;; -------------------
 ;;; Side-effecting variants of with-current-input-port* and friends.
 
-(define set-current-input-port! set-current-input-port)
-(define set-current-output-port! set-current-output-port)
-(define set-error-output-port! set-current-error-port)
