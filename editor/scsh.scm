@@ -12,23 +12,19 @@
   #:use-module (editor engine)
   #:use-module (editor repl)     ; rule, the key-table row
   #:use-module (editor properties)  ; bourne-shell, the ! escape's shell
-  #:use-module (scsh glob)       ; glob, under eglob
   #:export (seed line-datum shell-rules job-control?
-            bourne-tree? bourne-line-datum eglob))
+            bourne-tree? bourne-line-datum))
 
 ;;; ---- small list helpers ----------------------------------------------------
+;;; butlast/last are local; list-replace/splice/remove-at come from
+;;; (editor engine) and are DESTRUCTIVE -- do not redefine copying versions
+;;; here, or half the tree ops would mutate and half would copy.
 
 (define (butlast lst)
   (if (null? lst) '() (reverse (cdr (reverse lst)))))
 
 (define (last lst)
   (if (null? lst) #f (car (reverse lst))))
-
-(define (list-replace lst i v)
-  (append (list-head lst i) (list v) (list-tail lst (+ i 1))))
-
-(define (splice lst i v)
-  (append (list-head lst i) (list v) (list-tail lst i)))
 
 ;;; ---- is this shell controlling jobs? ----------------------------------------
 ;;; With job control ON (the default), a background job keeps the terminal's
@@ -118,10 +114,13 @@
   (any (lambda (e) (or (not (string? e)) (not (string=? e "")))) els))
 
 ;;; a form being restructured should not carry the empty word the user was
-;;; about to type into ("ls " -> "ls"), so the rendering stays tidy
+;;; about to type into ("ls " -> "ls"), so the rendering stays tidy.
+;;; DESTRUCTIVE: the list is cut in place, no cons is allocated.
 (define (drop-trailing-empties els)
-  (reverse (drop-while (lambda (e) (and (string? e) (string=? e "")))
-                        (reverse els))))
+  (let lp ((l els) (keep #f))
+    (cond ((null? l) (if keep (begin (set-cdr! keep '()) els) '()))
+          ((and (string? (car l)) (string=? (car l) "")) (lp (cdr l) keep))
+          (else (lp (cdr l) l)))))
 
 ;;; ---- redirection plumbing ---------------------------------------------------
 ;;; A redirection form is (> FILE), (< FILE), ... -- the heads scsh's
@@ -172,17 +171,27 @@
 ;;; command form ("wc " typed after "wc") rather than beside it.  A
 ;;; redirection form is left whole: its trailing empty FILENAME is a slot the
 ;;; user has not filled yet, not a dangling word.
+;;; DESTRUCTIVE, like the primitives: the sub-forms are tidied in place and the
+;;; list is cut, so a form handed to it must be one you own.
 (define (tidy els)
-  (map (lambda (e) (cond ((redir-form? e) e)
-                         ((pair? e) (tidy e))
-                         (else e)))
-       (drop-trailing-empties els)))
+  (let lp ((l els))
+    (cond ((null? l) #f)
+          (else (let ((e (car l)))
+                  (unless (or (redir-form? e) (not (pair? e)))
+                    (set-car! l (tidy e)))
+                  (lp (cdr l))))))
+  (drop-trailing-empties els))
 
 ;;; what a form should not carry when it is restructured: the trailing empty
 ;;; WORD tidy already handles, and the empty FORM a fresh stage leaves behind
-;;; (the () you were about to type into, in a pipe or an and/or list)
+;;; (the () you were about to type into, in a pipe or an and/or list).
+;;; DESTRUCTIVE, as tidy is.
 (define (drop-empty-tails els)
-  (reverse (drop-while null? (reverse (tidy els)))))
+  (let ((t (tidy els)))
+    (let lp ((l t) (keep #f))
+      (cond ((null? l) (if keep (begin (set-cdr! keep '()) t) '()))
+            ((null? (car l)) (lp (cdr l) keep))
+            (else (lp (cdr l) l))))))
 
 ;;; a pipeline absorbs the redirections that trail it: they aim at its end,
 ;;; which is its last stage, so that stage wraps in an epf carrying them --
@@ -192,8 +201,8 @@
   (let* ((last-i   (- (length pipe) 1))
          (last-st  (list-ref pipe last-i))
          (new-last (if (epf-form? last-st)
-                       (append (tidy last-st) redirs)
-                       (append (list "epf" (tidy last-st)) redirs))))
+                       (append! (tidy last-st) redirs)
+                       (append! (list "epf" (tidy last-st)) redirs))))
     (list-replace pipe last-i new-last)))
 
 ;;; the command at index I of CONT, with the redirections stacked after it,
@@ -201,11 +210,11 @@
 ;;; replaces them in CONT.  Returns (values CONT* the fresh stage's index).
 (define (epf-stage cont i)
   (let* ((redirs   (redirs-after cont i))
-         (epf      (append (list "epf" (tidy (list-ref cont i))) redirs))
+         (epf      (append! (list "epf" (tidy (list-ref cont i))) redirs))
          (newpipe  (list "|" epf '()))
-         (cont*    (append (list-head cont i)
-                           (list newpipe)
-                           (list-tail cont (+ i 1 (length redirs))))))
+         ;; the tail is hoisted BEFORE the cut -- list-head! truncates cont
+         (tail     (list-tail cont (+ i 1 (length redirs))))
+         (cont*    (append! (list-head! cont i) (list newpipe) tail)))
     (values cont* (- (length newpipe) 1))))
 
 ;;; |  : a stage joins the pipeline.  A redirection already in the line keeps
@@ -361,7 +370,7 @@
       ((and (or-form? tree) (null? (locus-path locus))
             (= (locus-index locus) (length tree)))
        (let* ((ts (drop-empty-tails tree)) (n (length ts)))
-         (values (append ts (list '())) (make-locus (list n) 0 0) #t)))
+         (values (append! ts (list '())) (make-locus (list n) 0 0) #t)))
       ((pipe-handled? tree locus) (pipe-at tree locus))
       (else
        (let ((target (up-target tree locus)))
@@ -405,11 +414,11 @@
                  ((pipeline? (list-ref parent cmd-idx))
                   (let* ((redirs   (redirs-after parent cmd-idx))
                          (absorbed (absorb-redirs (list-ref parent cmd-idx) redirs))
-                         (pipe*    (append absorbed (list '())))
-                         (parent*  (append (list-head parent cmd-idx)
-                                           (list pipe*)
-                                           (list-tail parent
-                                                      (+ cmd-idx 1 (length redirs))))))
+                         (pipe*    (append! absorbed (list '())))
+                         ;; the tail is read BEFORE the cut
+                         (tail     (list-tail parent (+ cmd-idx 1 (length redirs))))
+                         (parent*  (append! (list-head! parent cmd-idx)
+                                            (list pipe*) tail)))
                     (values (with-container tree pp parent*)
                             (make-locus (append pp (list cmd-idx (- (length pipe*) 1))) 0 0)
                             #t)))
@@ -427,15 +436,14 @@
              (if (pair? (redirs-after parent ci))
                  (let* ((redirs   (redirs-after parent ci))
                         (absorbed (absorb-redirs me redirs))
-                        (pipe*    (append absorbed (list '())))
-                        (parent*  (append (list-head parent ci)
-                                          (list pipe*)
-                                          (list-tail parent
-                                                     (+ ci 1 (length redirs))))))
+                        (pipe*    (append! absorbed (list '())))
+                        (tail     (list-tail parent (+ ci 1 (length redirs))))
+                        (parent*  (append! (list-head! parent ci)
+                                           (list pipe*) tail)))
                    (values (with-container tree pp parent*)
                            (make-locus (append pp (list ci (- (length pipe*) 1))) 0 0)
                            #t))
-                 (let* ((me* (append (tidy me) (list '())))
+                 (let* ((me* (append! (tidy me) (list '())))
                         (n   (- (length me*) 1)))
                    (values (with-container tree pp (list-replace parent ci me*))
                            (make-locus (append p (list n)) 0 0)
@@ -452,11 +460,10 @@
                         (pair? (redirs-after gpc gi)))
                    (let* ((redirs   (redirs-after gpc gi))
                           (absorbed (absorb-redirs parent redirs))
-                          (pipe*    (append absorbed (list '())))
-                          (gpc*     (append (list-head gpc gi)
-                                            (list pipe*)
-                                            (list-tail gpc
-                                                       (+ gi 1 (length redirs))))))
+                          (pipe*    (append! absorbed (list '())))
+                          (tail     (list-tail gpc (+ gi 1 (length redirs))))
+                          (gpc*     (append! (list-head! gpc gi)
+                                             (list pipe*) tail)))
                      (values (with-container tree gp gpc*)
                              (make-locus (append pp (list (length absorbed))) 0 0)
                              #t))
@@ -549,7 +556,7 @@
                  ;; redirect; an epf already there takes it beside its own
                  (let ((me (list-ref parent ci)))
                    (if (epf-form? me)
-                       (let* ((me* (append (tidy me) (list (list ">" ""))))
+                       (let* ((me* (append! (tidy me) (list (list ">" ""))))
                               (r   (- (length me*) 1)))
                          (values (with-container tree pp (list-replace parent ci me*))
                                  (make-locus (append pp (list ci r)) 1 0)
@@ -595,7 +602,7 @@
            (let* ((body (tidy (cdr tree)))
                   (els  (if (or (job-control?) (has-input-redir? body))
                             body
-                            (append body (list (devnull))))))
+                            (append! body (list (devnull))))))
              (values (cons "&" els) locus #t)))
           ;; the & family cycles run -> & -> && -> run (&& is scsh's and-list:
           ;; (and (zero? (run pf)) ...) -- a top-level line head like & and run)
@@ -603,7 +610,7 @@
            ;; && is a LIST of commands, so it opens an empty slot for the
            ;; next one, with the cursor in it -- as | opens a fresh stage
            (let* ((body (drop-empty-tails (cdr tree)))
-                  (new  (cons "&&" (append body (list '())))))
+                  (new  (cons "&&" (append! body (list '())))))
              (values new (make-locus (list (- (length new) 1)) 0 0) #t)))
           ((equal? head "&&")
            ;; back to run, which holds ONE command: drop the empty trailing
@@ -637,59 +644,9 @@
                 (lambda (t l handled?)
                   (values t l 'continue handled?)))))))
 
-;;; eglob -- glob with the shell's no-match policy.  The default is strict:
-;;; a pattern that matches nothing raises "No match".  nonomatch returns
-;;; unmatched patterns literally; nullglob returns nothing for them, plain
-;;; glob's behavior.  The modifiers are per-call symbol arguments and also
-;;; scsh-properties ('nonomatch / 'nullglob #t) -- a per-call symbol wins
-;;; over the property, and the last symbol on the call wins over an earlier
-;;; one.  Several patterns expand in order, each on its own policy.
-;;;
-;;; Like glob, eglob is a macro with an implicit quasiquote, so patterns can
-;;; be unquoted, shell-style: (eglob *.c) -- glob* stringifies the symbols.
-;;; The modifiers are spelled QUOTED -- (eglob 'nonomatch "*.c") -- inside
-;;; the quasiquote the quote arrives as the form (quote nonomatch), which is
-;;; what the check below recognizes; an unquoted nonomatch is a file name,
-;;; and quoting is what tells the two apart.
-
-(define (eglob-modifier? arg)
-  (and (pair? arg) (pair? (cdr arg)) (null? (cddr arg))
-       (eq? (car arg) 'quote)
-       (memq (cadr arg) '(nonomatch nullglob))))
-
-(define (eglob-modifier arg)
-  (cadr arg))
-
-(define (eglob-mode args)
-  (let lp ((args args) (mode #f))
-    (cond ((null? args)
-           (or mode
-               (cond ((scsh-property 'nonomatch) 'nonomatch)
-                     ((scsh-property 'nullglob) 'nullglob)
-                     (else 'nomatch))))
-          ((eglob-modifier? (car args)) (lp (cdr args) (eglob-modifier (car args))))
-          (else (lp (cdr args) mode)))))
-
-(define (eglob* args)
-  (let ((mode (eglob-mode args)))
-    (let loop ((args args) (out '()))
-      (cond ((null? args) out)
-            ;; a modifier: consumed by the mode, never a pattern
-            ((eglob-modifier? (car args)) (loop (cdr args) out))
-            (else
-             ;; glob* -- the procedure: stringify makes unquoted symbol
-             ;; patterns work
-             (let ((matches (glob* (car args))))
-               (cond ((pair? matches) (loop (cdr args) (append out matches)))
-                     ((eq? mode 'nonomatch)
-                      (loop (cdr args) (append out (list (car args)))))
-                     ((eq? mode 'nullglob) (loop (cdr args) out))
-                     (else (error "No match" (car args))))))))))
-
-
-(define-syntax eglob
-  (syntax-rules ()
-    ((_ rest ...) (eglob* `(rest ...)))))
+;;; The glob macro itself is NOT here: it is (script glob1), in script/, because
+;;; a script needs it as much as the editor does and this directory is the
+;;; interactive machinery.  All this layer does is put the form in the tree.
 
 ;;; *  : a glob in a command position.  The word at the cursor becomes the
 ;;;      pattern of ,@(glob "..."), the star landing inside it at the cursor,
@@ -720,7 +677,7 @@
     (and (string? head) (not (string=? head ""))
          (not (member head structural-heads))
          (not (string-prefix? "," head))
-         (not (string=? head "eglob")))))
+         (not (string=? head "glob1")))))
 
 (define (glob-context? tree path)
   ;; the splice is legal where the cursor's form sits inside a run/& subtree
@@ -752,17 +709,17 @@
               ;; the pattern word spells itself with its quotes, so its datum
               ;; is the string glob takes
               (let* ((el (list-ref form i))
-                     ;; the pattern is an UNQUOTED word -- eglob is a macro
+                     ;; the pattern is an UNQUOTED word -- glob1 is a macro
                      ;; with glob's implicit quasiquote, and glob* stringifies
                      (pattern (string-append (substring el 0 off)
                                              "*"
                                              (substring el off)))
-                     (g (list ",@" (list "eglob" pattern))))
+                     (g (list ",@" (list "glob1" pattern))))
                 (values (with-container tree p (list-replace form i g))
                         (make-locus (append p (list 1 1)) 1 (+ off 1))
                         'continue #t))
               ;; between elements: a fresh glob, the cursor after its star
-              (let ((g (list ",@" (list "eglob" "*"))))
+              (let ((g (list ",@" (list "glob1" "*"))))
                 (values (with-container tree p (splice form i g))
                         (make-locus (append p (list 1 1)) 1 1)
                         'continue #t)))))))

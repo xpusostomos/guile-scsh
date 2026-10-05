@@ -234,16 +234,16 @@
   (check "! is taken as the trigger"            #t taken?))
 
 (receive (t l handled)
-    (shell-operators '("!" "") (make-locus '() 1 0) #\|)
+    (shell-operators (list "!" "") (make-locus '() 1 0) #\|)
   (check "! keeps | a character"                #t handled)
   (check "  the tree still the one command string" '("!" "|") t))
 
 (receive (t l handled)
-    (shell-operators '("!" "") (make-locus '() 1 0) #\space)
+    (shell-operators (list "!" "") (make-locus '() 1 0) #\space)
   (check "! keeps the space inside the command" '("!" " ") t))
 
 (receive (t l handled)
-    (shell-operators '("!" "echo hi") (make-locus '() 1 7) #\;)
+    (shell-operators (list "!" "echo hi") (make-locus '() 1 7) #\;)
   (check "! keeps ; a character, not a begin"   '("!" "echo hi;") t)
   (check "  still bourne"                       #t (bourne-tree? t)))
 
@@ -252,7 +252,7 @@
        (bourne-line-datum '("!" "echo hi")))
 
 ;;; ---- * a glob in a command position -------------------------------------------
-;;; The word at the cursor becomes the UNQUOTED pattern of (eglob ...),
+;;; The word at the cursor becomes the UNQUOTED pattern of (glob1 ...),
 ;;; landing inside it at the cursor, so what is typed after extends the
 ;;; pattern.  Anywhere the splice is not legal or the place unclear, the *
 ;;; self-inserts.
@@ -260,7 +260,7 @@
 ;; the user's case: ls *.c
 (receive (t l handled)
     (shell-operators (sexp->tree '(run (ls ""))) (make-locus '(1) 1 0) #\*)
-  (check "* opens a glob"          "(run (ls ,@(eglob *)))" (render-tree t))
+  (check "* opens a glob"          "(run (ls ,@(glob1 *)))" (render-tree t))
   (check "  locus after the star"  '((1 1 1) 1 1) l)
   (check "  handled"               #t handled))
 
@@ -272,26 +272,26 @@
           (receive (t2 l2 action) (step tree locus (car keys) seed (append shell-rules core-rules))
             (type t2 l2 (cdr keys)))))
   (check "ls *.c through the table"
-         "(run (ls ,@(eglob *.c)))" (render-tree t))
+         "(run (ls ,@(glob1 *.c)))" (render-tree t))
   (check "  and its datum splices"
-         '(run (ls (unquote-splicing (eglob *.c))))
+         '(run (ls (unquote-splicing (glob1 *.c))))
          (line-datum (tree->sexp t))))
 
 ;; the word is taken whole, wherever the cursor is inside it
 (receive (t l handled)
     (shell-operators (sexp->tree '(run (ls foo))) (make-locus '(1) 1 1) #\*)
   (check "* mid-word takes the whole word as the pattern"
-         "(run (ls ,@(eglob f*oo)))" (render-tree t)))
+         "(run (ls ,@(glob1 f*oo)))" (render-tree t)))
 
 ;; a second star inside the pattern is just a character, through the whole
 ;; table: the rule declines and the printer inserts.  The state is the tree
 ;; ls *.c builds -- built with list, since sexp->tree of a ,@ literal reads
 ;; as splicing
 (receive (t l a)
-    (step (list "run" (list "ls" (list ",@" (list "eglob" "*.c"))))
+    (step (list "run" (list "ls" (list ",@" (list "glob1" "*.c"))))
           (make-locus '(1 1 1) 1 3) #\* seed (append shell-rules core-rules))
   (check "* inside the pattern is a character"
-         "(run (ls ,@(eglob *.c*)))" (render-tree t)))
+         "(run (ls ,@(glob1 *.c*)))" (render-tree t)))
 
 ;; declines: outside a shell line, inside a redirection, at the run level
 (receive (t l handled)
@@ -309,18 +309,18 @@
 ;; globs, wherever the line puts it -- an ||, an &&, a &, a run, a pipe
 (receive (t l handled)
     (shell-operators (sexp->tree '(run (epf (ls) (> foo)))) (make-locus '(1 1) 1 0) #\*)
-  (check "* inside a command in an epf globs"     "(run (epf (ls ,@(eglob *)) (> foo)))" (render-tree t)))
+  (check "* inside a command in an epf globs"     "(run (epf (ls ,@(glob1 *)) (> foo)))" (render-tree t)))
 (receive (t l handled)
     (shell-operators (sexp->tree '(|| (epf (ls) (> foo)) (epf (echo fail) (> bar))))
                      (make-locus '(1 1) 1 0) #\*)
   (check "* inside an epf in an || globs"
-         "(|| (epf (ls ,@(eglob *)) (> foo)) (epf (echo fail) (> bar)))" (render-tree t)))
+         "(|| (epf (ls ,@(glob1 *)) (> foo)) (epf (echo fail) (> bar)))" (render-tree t)))
 (receive (t l handled)
     (shell-operators (sexp->tree '(&& (epf (ls) (> foo)) (bar))) (make-locus '(1 1) 1 0) #\*)
-  (check "* inside an epf in an && globs"         "(&& (epf (ls ,@(eglob *)) (> foo)) (bar))" (render-tree t)))
+  (check "* inside an epf in an && globs"         "(&& (epf (ls ,@(glob1 *)) (> foo)) (bar))" (render-tree t)))
 (receive (t l handled)
     (shell-operators (sexp->tree '(& (epf (ls) (> foo)))) (make-locus '(1 1) 1 0) #\*)
-  (check "* inside an epf in a & globs"           "(& (epf (ls ,@(eglob *)) (> foo)))" (render-tree t)))
+  (check "* inside an epf in a & globs"           "(& (epf (ls ,@(glob1 *)) (> foo)))" (render-tree t)))
 
 ;; but the epf's own element level (between the pf and its redirections) is not
 ;; a place a splice is meaningful, and neither is a bare Scheme begin
@@ -337,19 +337,19 @@
 ;;; instead of acting at the cursor's own level.
 
 (receive (t l handled)
-    (shell-operators (list "run" (list "ls" (list ",@" (list "eglob" "*.c"))))
+    (shell-operators (list "run" (list "ls" (list ",@" (list "glob1" "*.c"))))
                      (make-locus '(1 1 1) 1 2) #\>)
   (check "> inside the glob attaches to the command"
-         "(run (ls ,@(eglob *.c)) (> ))" (render-tree t))
+         "(run (ls ,@(glob1 *.c)) (> ))" (render-tree t))
   (check "  handled" #t handled))
 
 (receive (t l handled)
     (shell-operators (list "run" (list "|"
-                                       (list "ls" (list ",@" (list "eglob" "*.c")))
+                                       (list "ls" (list ",@" (list "glob1" "*.c")))
                                        (list "wc")))
                      (make-locus '(1 1 1 1) 1 2) #\>)
   (check "> inside the glob in a pipeline epf-wraps the stage"
-         "(run (| (epf (ls ,@(eglob *.c)) (> )) (wc)))" (render-tree t)))
+         "(run (| (epf (ls ,@(glob1 *.c)) (> )) (wc)))" (render-tree t)))
 
 (receive (t l handled)
     (shell-operators (sexp->tree '(display 5)) (make-locus '(1) 0 1) #\>)

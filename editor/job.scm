@@ -89,7 +89,7 @@
                         (close-port upw)
                         (read-char dnr)                 ; park (EOF releases too)
                         (close-port dnr)
-                        ;; an error inside the job -- eglob's "No match", a
+                        ;; an error inside the job -- glob1's "No match", a
                         ;; bad form -- is said the way the prompt says it,
                         ;; and fails the job; the shell itself continues
                         (catch #t

@@ -2,55 +2,119 @@
 !#
 ;;; scsh -- the scsh shell.
 ;;;
-;;;   scsh                the structure editor REPL   (editor/run.scm)
+;;;   scsh                the structure editor REPL
 ;;;   scsh --plain        a plain guile REPL, with scsh loaded
-;;;   scsh FILE ...       load FILE ..., then a plain REPL
+;;;   scsh -c EXPR        evaluate EXPR, and exit            (Guile's own)
+;;;   scsh FILE ...       run FILE as a script, and exit      (Guile's own)
 ;;;
-;;; Run it from anywhere: the directory holding this script is added to
-;;; %load-path, so both the (scsh ...) modules and the (editor ...) modules
-;;; are found.
+;;; The last two are Guile's command line, passed through untouched: with
+;;; anything but the two cases above this script re-execs guile with
+;;; script/prelude.scm loaded, and does not come back.  A script can therefore
+;;; say
+;;;
+;;;     #!/usr/bin/scsh
+;;;     !#
+;;;     (display (run/string (ls *.scm)))
+;;;
+;;; and Guile reads it, with run, &, ||, the redirections and glob1 already in
+;;; scope.  None of the interactive machinery is loaded for a script: no
+;;; terminal, no job control, no history -- nothing from (editor ...).
+;;;
+;;; The second line closes the shebang.  Guile's reader takes "#!" as the start
+;;; of a block comment ending at the next "!#", so a script's first line is not
+;;; Scheme to it until it is closed.  That is Guile's own convention, and the
+;;; same one bin/scsh follows here; it is why a script needs the "!#" line.
 
-;;; Find this script's directory (and the tree it lives in), wherever the
-;;; script was invoked from, and let Guile search both: (scsh ...) lives in the
-;;; tree root, and so does (editor ...).
-(set! %load-path
-      (let* ((here (dirname (current-filename)))      ; .../bin
-             (root (dirname here)))                   ; the source tree
-        (cons root (cons here %load-path))))
+;;; ---- where the modules are ------------------------------------------------
+;;; A checkout keeps them at the tree root, one level above bin/; an install
+;;; puts them under <prefix>/share/guile/site/X.Y, with the compiled files in
+;;; <prefix>/lib/guile/X.Y/site-ccache.  Each is used only if it exists, so one
+;;; launcher serves both layouts, and an install under /usr -- which Guile
+;;; already searches -- is unaffected.
+(define here   (dirname (current-filename)))     ; .../bin
+(define prefix (dirname here))                   ; the tree, or the install prefix
+(define site   (string-append prefix "/share/guile/site/" (effective-version)))
+(define ccache (string-append prefix "/lib/guile/" (effective-version) "/site-ccache"))
 
-;;; The core set of scsh modules. (scsh syntax) provides run, &, |,
-;;; redirection and friends; the other modules add the procedures and
-;;; syntax that those rely on.
-(use-modules (scsh syntax))       ; run, &, ||, &&, run/string, ...
-(use-modules (scsh scsh))         ; with-cwd, call/fdes, fork, ...
-(use-modules (scsh procobj))      ; wait, proc:pid, ...
-(use-modules (scsh run-extras))   ; run/collecting*
-(use-modules (scsh glob))         ; glob
-(use-modules (ice-9 readline))    ; the plain repl's line editing
-(use-modules (ice-9 top-repl))    ; the plain repl itself
+(define load-roots
+  (filter (lambda (d) (and d (file-exists? d)))
+          (list here
+                (and (file-exists? (string-append prefix "/scsh")) prefix)
+                site)))
 
-;;; the stock REPL: line editing and history, then everything in (guile-user)
+(define (find-on-load-path name)
+  (let lp ((dirs load-roots))
+    (and (pair? dirs)
+         (let ((f (in-vicinity (car dirs) name)))
+           (if (file-exists? f) f (lp (cdr dirs)))))))
+
+(define (use-load-roots!)
+  (set! %load-path (append (filter (lambda (d) (not (member d %load-path))) load-roots)
+                           %load-path))
+  (when (file-exists? ccache)
+    (set! %load-compiled-path (cons ccache (delq ccache %load-compiled-path)))))
+
+(use-modules (ice-9 readline))         ; the plain REPL's line editing
+(use-modules (ice-9 top-repl))         ; the plain REPL itself
+
+;;; ---- what the user has ----------------------------------------------------
+;;; script/prelude.scm is loaded into (guile-user) -- the module a typed line is
+;;; EVALUATED in and a script RUNS in -- so a line can name run, &, glob1 and
+;;; the rest without importing anything.  It is a script fragment, not a
+;;; module, for exactly that reason.
+(define (load-prelude!)
+  (let ((prelude (find-on-load-path "script/prelude.scm")))
+    (if prelude
+        (load prelude)
+        (begin (display "scsh: cannot find script/prelude.scm on the load path")
+               (newline)
+               (exit 1)))))
+
+;;; ---- a script: hand over to Guile -----------------------------------------
+;;; exec, not fork, so the script's exit status is the shell's.  The prelude is
+;;; loaded by Guile itself, before it reads the script, so the script is read
+;;; with scsh already in (guile-user).
+(define (run-guile args)
+  (let ((prelude (find-on-load-path "script/prelude.scm")))
+    (if (not prelude)
+        (begin (display "scsh: cannot find script/prelude.scm on the load path")
+               (newline)
+               (exit 1))
+        (apply execlp "guile"
+               (append (list "guile")
+                       (apply append (map (lambda (d) (list "-L" d)) load-roots))
+                       (if (file-exists? ccache) (list "-C" ccache) '())
+                       (list "-l" prelude)
+                       args)))))
+
+;;; ---- the plain REPL -------------------------------------------------------
 (define (plain-repl)
-  ;; the editor modules resolve through the load path this script sets up at
-  ;; runtime -- an import at the top of the file would need them at COMPILE
-  ;; time, before that path exists
-  (use-modules (editor properties))   ; scsh-property, scsh-property-set!
+  ;; (editor properties) is imported here, at run time, because the load path
+  ;; that finds it is set up above; readline and top-repl are core, so they are
+  ;; imported at the top of the file where the compiler can see them
+  (use-modules (editor properties))     ; scsh-property, scsh-property-set!
   (activate-readline)
   (newline)
   (display "scsh is loaded -- try (run (ls -l)) or (run/string (echo hi))")
   (newline)
-  (use-modules (ice-9 top-repl))
   (top-repl))
 
-;;; the structure editor: tree, locus, structural keys (editor/README.md)
+;;; ---- start the shell ------------------------------------------------------
+;;; (command-line) begins with this script itself, so drop the car.  The import
+;;; and the call are evaluated rather than compiled, because the module is not
+;;; on the load path until use-load-roots! has run.
 (define (structure-editor)
-  (load (in-vicinity (dirname (current-filename)) "../editor/run.scm")))
+  (eval '(begin (use-modules (structured-scsh main)) (main))
+        (current-module)))
 
-;;; (command-line) begins with this script itself, so drop the car.
 (let ((args (cdr (command-line))))
-  (cond ((member "--plain" args) (plain-repl))
-        ((null? args) (structure-editor))
-        (else (for-each (lambda (f)
-                          (if (not (string-prefix? "-" f)) (load f)))
-                        args)
-              (plain-repl))))
+  (cond ((member "--plain" args)
+         (use-load-roots!)
+         (load-prelude!)
+         (plain-repl))
+        ((null? args)
+         (use-load-roots!)
+         (load-prelude!)
+         (structure-editor))
+        (else
+         (run-guile args))))

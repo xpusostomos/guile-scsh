@@ -153,6 +153,11 @@
   (history-reset!))
 
 ;;; UP: the previous item.  At the oldest, nothing moves.
+;;;
+;;; The item is COPIED on the way out.  The tree ops are destructive (see
+;;; editor/engine.scm), so handing out the stored tree itself would let the very
+;;; next keystroke write into history.  The copy keeps the entry pristine; a
+;;; recalled line is the user's to edit as they like.
 (define (history-previous tree locus)
   (if (zero? *pos*)
       (values tree locus)
@@ -160,7 +165,7 @@
         (when (= *pos* (length *items*))
           (set! *draft* (cons tree locus)))
         (set! *pos* (- *pos* 1))
-        (let ((t (list-ref *items* *pos*)))
+        (let ((t (tree-copy (list-ref *items* *pos*))))
           (values t (make-locus '() (length t) 0))))))
 
 ;;; DOWN: the next item; past the newest, the draft comes back.

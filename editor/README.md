@@ -108,8 +108,8 @@ There are exactly two kinds of edit:
   holds the editor's rows (control keys, `(` and `)` as Scheme structure, the
   printer last — which always handles and types printable characters).  The
   table is passed through the whole machinery (`dispatch-key`, `run-loop`,
-  `edit-line` all take it), so a program can supply its own; `run.scm` composes
-  the default.  `dispatch-key` is pure
+  `edit-line` all take it), so a program can supply its own; `(structured-scsh main)`
+  composes the default.  `dispatch-key` is pure
   `(tree locus key) → (tree' locus' action)`; `run-loop` drives it with any key
   source and display; `edit-line` is the same loop on a terminal.
 - `scsh.scm` — the scsh layer: what a shell line starts as (the first word opens
@@ -137,9 +137,12 @@ There are exactly two kinds of edit:
   declined `|` falls through to the printer and is typed.  The editor itself
   still knows nothing of any of this; its loops take the key table and a
   `#:seed`.
-- `run.scm` — the editor as an scsh REPL: `./editor/run.scm`.  Loads the scsh
-  modules, starts each line as `(run ())` with the locus in the command form,
-  and evaluates the committed tree.
+- `(structured-scsh main)` — the shell itself, `structured-scsh/main.scm`: the
+  editor used as an scsh REPL.  It starts each line as `(run ())` with the locus
+  in the command form and evaluates the committed tree.  It is a module, not
+  `editor/run.scm` as it once was: it is what the editor's modules are FOR, so
+  it lives outside them, and being a module it is compiled into the site ccache
+  rather than into each user's cache.  `bin/scsh` imports it and calls `(main)`.
 
 ## Naming a value rather than running a command
 
@@ -230,14 +233,19 @@ Enter-line fallback — and both use Guile's own `read`.  There is no parser her
                                            # a line starts empty; the first word
                                            # typed opens (run ()) for you
     ./bin/scsh --plain                     # a plain Guile REPL with scsh loaded
-    ./editor/run.scm                       # same as bin/scsh, but without the loader
+    ./bin/scsh -c EXPR                     # evaluate EXPR, and exit
+    ./bin/scsh FILE ...                    # run FILE as a script, and exit
+                                           # (both are Guile's own command line,
+                                           #  passed through untouched)
 
-`bin/scsh` may also be given files to load first, and it finds the tree from
-wherever it is invoked.
+`bin/scsh` finds the tree from wherever it is invoked: the root when it is in a
+checkout, the site directory when it is installed.  The last two forms never
+load any of this -- a script gets scsh's forms and `glob1` from
+`script/prelude.scm` and nothing from `(editor ...)`.
 
 and, with no terminal (keys piped in), which is also how it can be tested:
 
-    printf 'echo hi\n' | guile -q -L . editor/run.scm
+    printf 'echo hi\n' | ./bin/scsh
     scsh> (run (echo hi))
     hi
     0

@@ -27,7 +27,7 @@
   #:use-module (ice-9 receive)
   #:export (make-locus locus-path locus-index locus-offset
             node? sym? element?
-            container-at with-container splice list-replace remove-at
+            container-at with-container splice list-replace remove-at list-head! tree-copy
             insert-char insert-char* delete-left
             insert-form leave-form delete-node transpose-node delete-right
             insert-break break? wrap-begin
@@ -44,14 +44,68 @@
 (define (last lst)
   (if (null? lst) #f (car (reverse lst))))
 
+;;; These three are DESTRUCTIVE: they mutate the list they are handed and return
+;;; it.  A cons cell is therefore never copied, so where a cell sits in the
+;;; structure is stable across edits -- which is what anything hung off a cell
+;;; (a rendering, or eventually a break marker) depends on.  See TREE-PLAN.md.
+;;;
+;;; They behave exactly as the copying versions did, errors included (verified
+;;; over every index of lists up to length 4, valid and invalid): the same calls
+;;; succeed and return equal lists, and the same calls raise.
+;;;
+;;; The price is the standing rule: an op mutates its input, so a caller must
+;;; not hold a tree it is going to edit.  The places that must copy are listed
+;;; in TREE-PLAN.md §6.3 -- today, history recall (history-previous).
+;;;
+;;; Only index 0 needs a fresh cons: the head cons IS the list, so a replacement
+;;; there sets its car and an insertion returns a new head.
 (define (list-replace lst i v)
-  (append (list-head lst i) (list v) (list-tail lst (+ i 1))))
+  (set-car! (list-tail lst i) v)
+  lst)
 
 (define (splice lst i v)
-  (append (list-head lst i) (list v) (list-tail lst i)))
+  (if (= i 0)
+      (cons v lst)
+      (begin (set-cdr! (list-tail lst (- i 1)) (cons v (list-tail lst i)))
+             lst)))
 
 (define (remove-at lst i)
-  (append (list-head lst i) (list-tail lst (+ i 1))))
+  (if (= i 0)
+      (cdr lst)
+      (begin (set-cdr! (list-tail lst (- i 1)) (list-tail lst (+ i 1)))
+             lst)))
+
+;;; append! needs no definition here: it is a core binding (Guile's destructive
+;;; append), visible in every module.  It is NOT listed in this module's
+;;; #:export -- exporting an imported (or core) name makes it an unbound binding
+;;; in the module, which is exactly how it first looked "undefined" here.
+
+;;; the destructive LIST-HEAD: keep exactly the first N conses, cutting the cdr
+;;; at depth N-1 rather than allocating.  Every surviving cons stays where it is.
+;;; N < 1 has no destructive form (the head cons IS the list), so it yields '().
+;;;
+;;; It DESTROYS the tail: take `(list-tail lst n)` BEFORE calling it, or the tail
+;;; is gone -- and mind that APPEND! evaluates its arguments left to right, so an
+;;; inline tail is read after the cut.  Verified a drop-in for list-head over
+;;; every N of lists up to length 4, errors included.
+(define (list-head! lst n)
+  (if (< n 1)
+      '()
+      (let lp ((l lst) (k (- n 1)))
+        (cond ((null? l) (error "list-head!: out of bounds" n))
+              ((= k 0) (set-cdr! l '()) lst)
+              (else (lp (cdr l) (- k 1)))))))
+
+;;; a tree deep enough to edit without touching the original: the cons cells are
+;;; new, and the leaves are shared (words are strings, and immutable).  %BREAK%
+;;; is kept by identity -- a copy of it would no longer be break?.
+;;;
+;;; History hands out its stored trees, so it copies on the way out; see
+;;; editor/history.scm.
+(define (tree-copy t)
+  (cond ((break? t) t)
+        ((pair? t) (cons (tree-copy (car t)) (tree-copy (cdr t))))
+        (else t)))
 
 ;;; ---- elements and loci ----------------------------------------------------
 
@@ -88,11 +142,14 @@
              (let* ((el (list-ref cont i))
                     (left (substring el 0 off))
                     (right (substring el off)))
-               (values (with-container tree path
-                                       (append (list-head cont i)
-                                               (list left %break% right)
-                                               (list-tail cont (+ i 1))))
-                       (make-locus path (+ i 2) 0))))
+               ;; the tail is hoisted BEFORE the cut: list-head! truncates cont,
+               ;; and append! reads its arguments left to right
+               (let ((tail (list-tail cont (+ i 1))))
+                 (values (with-container tree path
+                                         (append! (list-head! cont i)
+                                                  (list left %break% right)
+                                                  tail))
+                         (make-locus path (+ i 2) 0)))))
             ;; at the end of a word: the break goes after it
             ((and (< i (length cont)) (sym? (list-ref cont i))
                   (= off (string-length (list-ref cont i))))
@@ -183,7 +240,7 @@
                 (values (with-container tree path (splice cont i c))
                         (make-locus path i 1))))
           ;; the locus is the empty position at the end of this node
-          (values (with-container tree path (append cont (list c)))
+          (values (with-container tree path (append! cont (list c)))
                   (make-locus path i 1))))))
 
 ;;; Backspace: delete the character to the left; at the start of a symbol,
@@ -288,9 +345,10 @@
                ;; the word to the left stays, the new form follows, and the
                ;; word's remainder (if any) follows that
                (inserted (if (string=? right "") (list left '()) (list left '() right))))
-          (values (with-container tree path
-                                  (append (list-head cont i) inserted (list-tail cont (+ i 1))))
-                  (make-locus (append path (list (+ i 1))) 0 0)))
+          (let ((tail (list-tail cont (+ i 1))))
+            (values (with-container tree path
+                                    (append! (list-head! cont i) inserted tail))
+                    (make-locus (append path (list (+ i 1))) 0 0))))
         (if (and (< i (length cont)) (sym? (list-ref cont i))
                  (string=? (list-ref cont i) ""))
             ;; an empty word is only where the cursor was sitting: the new form
@@ -372,10 +430,12 @@
          (parent (container-at tree ppath))
          (me     (list-ref parent ci))
          (next   (list-ref parent (+ ci 1)))
-         (me*    (append me (list next)))
+         ;; the OLD length must be read before the append!: me* IS me, mutated
+         (old-n  (length me))
+         (me*    (append! me (list next)))    ; the element moves, its cons comes along
          (parent* (list-replace (remove-at parent (+ ci 1)) ci me*)))
     (values (with-container tree ppath parent*)
-            (kept-locus fpath (length me) (length me*) locus))))
+            (kept-locus fpath old-n (length me*) locus))))
 
 (define (barf-node tree locus)
   (let* ((fpath  (target-form-path tree locus))
@@ -383,11 +443,13 @@
          (ci     (last fpath))
          (parent (container-at tree ppath))
          (me     (list-ref parent ci))
+         ;; likewise read before the cut: me* IS me, cut one child shorter
+         (old-n  (length me))
          (child  (last me))
-         (me*    (butlast me))
+         (me*    (list-head! me (- old-n 1)))    ; destructive: the form loses its last child
          (parent* (list-replace (splice parent (+ ci 1) child) ci me*)))
     (values (with-container tree ppath parent*)
-            (kept-locus fpath (length me) (length me*) locus))))
+            (kept-locus fpath old-n (length me*) locus))))
 
 ;;; Can the target form do it?  Nothing at the root: the line has no sibling to
 ;;; take in and no parent to give a child to.
