@@ -19,32 +19,48 @@
 ;;; Restoring upstream's split removes the cycle.
 
 (define-module (scsh directory)
-  :use-module (ice-9 receive)
-  :use-module (ice-9 optargs)
-  :use-module (scsh utilities)            ; check-arg
-  :use-module (scsh let-optionals-aster)  ; let-optionals*
-  :use-module (scsh fname)                ; ensure-file-name-is-nondirectory
-  :export (directory-files))
+  #:use-module (ice-9 receive)
+  #:use-module (ice-9 optargs)
+  #:use-module (ice-9 ftw)                ; scandir
+  #:use-module (scsh utilities)            ; check-arg
+  #:use-module (scsh let-optionals-aster)  ; let-optionals*
+  #:use-module (scsh fname)                ; ensure-file-name-is-nondirectory
+  #:export (directory-files))
 
 ;;; (directory-files [dir dotfiles?]) -> list of strings
 ;;;
-;;; The entries of DIR, sorted in Unix filename order, with "." and ".." always
-;;; dropped and other dot files dropped unless DOTFILES? is true.
+;;; scsh's procedure -- and SRFI-170's, which is the same one: that SRFI was
+;;; written from scsh's system-call documentation by its original author.  Bare
+;;; names, with no directory prefix; "." and ".." are never returned, whatever
+;;; DOTFILES? says; other dot files come back only when it is true.
+;;;
+;;; The work is scandir's: it reads the directory, closes it, and sorts by the
+;;; comparator it is handed.  What is left here is the policy -- which entries,
+;;; and in what order.
 (define (directory-files . args)
-  (let-optionals* args ((dir ".")
-		       (dotfiles? #f))
-		 (check-arg string? dir directory-files)
-		 (let ((dport (opendir
-			       (ensure-file-name-is-nondirectory dir))))
-		   (let loop ((result '()))
-		     (let ((entry (readdir dport)))
-		       (cond ((eof-object? entry)
-			      (closedir dport)
-			      (sort! result string<?))
-			     ((or (and (not dotfiles?)
-				       (char=? #\. (string-ref entry 0)))
-				  (string=? "." entry)
-				  (string=? ".." entry))
-			      (loop result))
-			     (else
-			      (loop (cons entry result)))))))))
+  (let-optionals* args ((dir ".") (dotfiles? #f))
+    (check-arg string? dir directory-files)
+    (or (scandir (ensure-file-name-is-nondirectory dir)
+                 (lambda (f) (and (not (member f '("." "..")))
+                                  (or dotfiles? (not (dotfile? f)))))
+                 filename<?)
+        ;; scandir answers #f for a name it cannot read; scsh raises, and the
+        ;; documented result is a list of strings, never #f
+        (error "directory-files: cannot read directory" dir))))
+
+;;; A dot file is one whose name begins with a dot.  ("." and ".." are dot
+;;; files too, but directory-files never returns them.)
+(define (dotfile? f)
+  (char=? #\. (string-ref f 0)))
+
+;;; The Unix filename order: dot files first, then the rest, each group by
+;;; string<?.  This is what makes DOTFILES? mean anything -- under plain
+;;; string<? they would merely be interleaved by ASCII, "." falling after "-"
+;;; and before "Z".
+;;;
+;;; Upstream calls this filename<= and compares with string<=, which suits
+;;; sort-list!; scandir wants a strict ordering, hence string<? and the name.
+(define (filename<? f1 f2)
+  (cond ((dotfile? f1) (if (dotfile? f2) (string<? f1 f2) #t))
+        ((dotfile? f2) #f)
+        (else (string<? f1 f2))))
