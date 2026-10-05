@@ -30,6 +30,7 @@
 	seek/set seek/delta seek/end tell vpipe
 	signal-process signal-process-group pause-until-interrupt itimer
 	user-info user-info:name user-info:uid user-info:gid
+	errno-msg
 	user-info:home-dir user-info:shell
 	name->user-info uid->user-info ->uid ->username %homedir
 	group-info group-info:name group-info:gid group-info:members
@@ -778,14 +779,14 @@
 (define-record-type group-info-type
   (make-group-info name gid members)
   group-info?
-  (name user-info:name)
-  (gid user-info:gid)
-  (members user-info:members))
+  (name group-info:name)
+  (gid group-info:gid)
+  (members group-info:members))
 
 
-(set-record-type-printer! user-info-type
+(set-record-type-printer! group-info-type
    (lambda (gi port)
-     (format port "#{group-info ~a}" (user-info:name gi))))
+     (format port "#{group-info ~a}" (group-info:name gi))))
 
 ;;; These guys return static structs, so they aren't reentrant.
 ;;; Must be fixed for threaded version.
