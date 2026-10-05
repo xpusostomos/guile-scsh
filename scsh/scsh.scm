@@ -624,9 +624,9 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (stdio->stdports)
-  (set-current-input-port!  (fdes->inport 0))
-  (set-current-output-port! (fdes->outport 1))
-  (set-error-output-port!   (fdes->outport 2)))
+  (set-current-input-port  (fdes->inport 0))
+  (set-current-output-port (fdes->outport 1))
+  (set-current-error-port  (fdes->outport 2)))
 
 (define (with-stdio-ports* thunk)
   (with-current-input-port (fdes->inport 0)
@@ -641,7 +641,7 @@
 (define (stdports->stdio)
   (dup (current-input-port)  0)
   (dup (current-output-port) 1)
-  (dup (error-output-port)   2))
+  (dup (current-error-port)  2))
 
 
 ;;; Command-line argument access
