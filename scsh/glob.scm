@@ -28,7 +28,8 @@
   :use-module (scsh scsh)
   :use-module (ice-9 regex)
   :use-module (scsh ssyntax)
-  :export (glob glob* directory-files glob->regexp-list))
+  :use-module (scsh directory)   ; directory-files
+  :export (glob glob* glob->regexp-list))
 
 (define char->ascii char->integer)
 
@@ -49,18 +50,6 @@
 (define (file-name-as-directory fn)
   (string-append fn "/"))
 
-(define (filter-dot-files dotfile?)
-  (lambda (x)
-    (if (or (equal? x ".") (equal? x ".."))
-	#f
-	(if dotfile?
-	    #t
-	    (if (eq? (string-ref x 0) #\.)
-		#f
-		#t)))))
-
-(define (directory-files dir dotfile?)
-  (filter (filter-dot-files dotfile?) (port->list readdir (opendir dir))))
 
 (define (glob-one-pattern pattern)
   (let ((plen (string-length pattern)))
