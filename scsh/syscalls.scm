@@ -13,7 +13,6 @@
   :use-module (srfi srfi-9)
   :use-module (srfi srfi-9 gnu)
   :use-module (scsh utilities)
-  :use-module (scsh fname)
   :use-module (scsh procobj)
   :use-module (scsh errno)
   :use-module (scsh let-optionals-aster)
@@ -35,7 +34,6 @@
 	name->user-info uid->user-info ->uid ->username %homedir
 	group-info group-info:name group-info:gid group-info:members
 	->gid ->groupname
-	directory-files
 	env->alist alist->env
 	fdes-flags set-fdes-flags fdes-status set-fdes-status
 	open/read open/write open/read+write open/non-blocking
@@ -834,25 +832,6 @@
   (scm_sort_filevec ((C "const char** ~a") cvec)
 		    (integer    veclen))
   ignore)
-
-(define (directory-files . args)
-  (let-optionals* args ((dir ".")
-		       (dotfiles? #f))
-		 (check-arg string? dir directory-files)
-		 (let ((dport (opendir
-			       (ensure-file-name-is-nondirectory dir))))
-		   (let loop ((result '()))
-		     (let ((entry (readdir dport)))
-		       (cond ((eof-object? entry)
-			      (closedir dport)
-			      (sort! result string<?))
-			     ((or (and (not dotfiles?)
-				       (char=? #\. (string-ref entry 0)))
-				  (string=? "." entry)
-				  (string=? ".." entry))
-			      (loop result))
-			     (else
-			      (loop (cons entry result)))))))))
 
 ;;; I do this one in C, I'm not sure why:
 ;;; It is used by MATCH-FILES.
