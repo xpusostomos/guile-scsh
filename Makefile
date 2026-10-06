@@ -45,13 +45,29 @@ LOCALSITEDIR ?= $(LOCALPREFIX)/share/guile/site/$(EFFVER)
 # Every .scm with a define-module is a module: it is compiled and installed
 # under the site directory, its .go under the site ccache.  What is left over
 # is a SCRIPT FRAGMENT -- script/prelude.scm, which the launcher LOADS before
-# anything is imported, so it must not be compiled as a module.  bin/ holds
-# launchers, installed as they stand.
+# anything is imported.  bin/ holds launchers, installed as they stand.
 
 DIRS    := scsh script structured-scsh
 SCRIPTS := script/prelude.scm
 MODULES := $(filter-out $(SCRIPTS),$(wildcard $(addsuffix /*.scm,$(DIRS))))
 GOS     := $(patsubst %.scm,build/%.go,$(MODULES))
+
+# What gets installed from the tree: every file under $(DIRS) except editor
+# backups.  `cp -r $(DIRS)' carried foo.scm~ along with foo.scm, so whatever an
+# editor left lying in the working tree ended up in the system's site directory
+# -- where nothing ever removes it.  One file at a time, by name, with `find'
+# rather than a wildcard so the list holds files and not directories.
+SOURCES := $(shell find $(DIRS) -type f ! -name '*~')
+
+# The prelude is compiled like everything else, but it INSTALLS differently: not
+# into the site ccache, which is indexed by module name -- and a fragment has no
+# module name -- but beside its own source, which is where Guile looks for a
+# fragment's compiled file.  Either way `guile -l script/prelude.scm' finds it
+# and skips the source: it is a fragment of nothing but `use-modules', so
+# compiling it bakes in no definitions that the wrong module could capture.  (A
+# `define-module' wrapper would break it: the imports would land in that module
+# instead of (guile-user), the module the user's lines and scripts run in.)
+PRELUDE_GO := build/script/prelude.go
 
 all: $(GOS)
 
@@ -62,10 +78,11 @@ build/%.go: %.scm
 
 # The per-file prerequisites come from Guile's own dependency tool.  They are
 # conservative -- a .go is rebuilt when any module it uses changes, not only
-# when a macro did -- which is the safe direction to be wrong in.
-build/deps.mk: $(MODULES) tools/mkdeps.scm
+# when a macro did -- which is the safe direction to be wrong in.  The prelude
+# is asked about too, so its .go is rebuilt when a module it imports changes.
+build/deps.mk: $(MODULES) $(SCRIPTS) tools/mkdeps.scm
 	@mkdir -p build
-	@GUILE_LOAD_PATH=. $(GUILE) -q tools/mkdeps.scm $(MODULES) > $@
+	@GUILE_LOAD_PATH=. $(GUILE) -q tools/mkdeps.scm $(MODULES) $(SCRIPTS) > $@
 
 -include build/deps.mk
 
@@ -73,12 +90,13 @@ build/deps.mk: $(MODULES) tools/mkdeps.scm
 
 # The old copy is cleared first: a module that has been renamed or deleted
 # would otherwise linger beside the new one and still be found.
-install: all
+install: all $(PRELUDE_GO)
 	install -d $(DESTDIR)$(SITEDIR) $(DESTDIR)$(CCACHEDIR) $(DESTDIR)$(BINDIR)
 	rm -rf $(DESTDIR)$(SITEDIR)/scsh $(DESTDIR)$(SITEDIR)/script $(DESTDIR)$(SITEDIR)/structured-scsh
-	rm -rf $(DESTDIR)$(CCACHEDIR)/scsh $(DESTDIR)$(CCACHEDIR)/script $(DESTDIR)$(CCACHEDIR)/structured-scsh
-	cp -r $(DIRS) $(DESTDIR)$(SITEDIR)/
-	cp -r build/scsh build/script build/structured-scsh $(DESTDIR)$(CCACHEDIR)/
+	rm -rf $(DESTDIR)$(CCACHEDIR)/scsh $(DESTDIR)$(CCACHEDIR)/structured-scsh
+	for f in $(SOURCES); do install -D -m 644 $$f $(DESTDIR)$(SITEDIR)/$$f; done
+	cp -r build/scsh build/structured-scsh $(DESTDIR)$(CCACHEDIR)/
+	install -m 644 $(PRELUDE_GO) $(DESTDIR)$(SITEDIR)/script/prelude.go
 	install -m 755 bin/scsh $(DESTDIR)$(BINDIR)/scsh
 
 # A local install carries no .go: Guile compiles into the user's own cache the
@@ -87,7 +105,7 @@ install: all
 install-local:
 	install -d $(LOCALSITEDIR) $(LOCALBINDIR)
 	rm -rf $(LOCALSITEDIR)/scsh $(LOCALSITEDIR)/script $(LOCALSITEDIR)/structured-scsh
-	cp -r $(DIRS) $(LOCALSITEDIR)/
+	for f in $(SOURCES); do install -D -m 644 $$f $(LOCALSITEDIR)/$$f; done
 	install -m 755 bin/scsh $(LOCALBINDIR)/scsh
 
 # uninstall removes what install put there: the site tree, its ccache, and the

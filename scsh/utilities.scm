@@ -3,7 +3,6 @@
 
 (define-module (scsh utilities)
   :use-module (srfi srfi-1)
-  :use-module (scsh loophole)
   :use-module (scsh bitwise)
   :export (del first? nth
                mapv mapv! vector-every? copy-vector initialize-vector 
@@ -149,15 +148,12 @@
       ((< i 0) ans)))
 
 
-;;; We loophole the call to ERROR -- the point is that perhaps the
-;;; user will interact with a breakpoint, and proceed with a new
-;;; value, which we will then pass to a new invocation of CHECK-ARG
-;;; for approval.
+;;; On failure, ERROR is called in tail position and its value handed to a new
+;;; CHECK-ARG: a user who interacts with the breakpoint can proceed with a new
+;;; value, which is then checked in its turn.
 (define (check-arg pred val caller)
   (if (pred val) val
-      (check-arg pred
-		 (loophole :value (error "Bad argument" val pred caller))
-		 caller)))
+      (check-arg pred (error "Bad argument" val pred caller) caller)))
 
 (define (conjoin f g)
   (lambda args (and (apply f args) (apply g args))))
