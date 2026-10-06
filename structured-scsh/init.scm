@@ -14,7 +14,7 @@
 ;;; as it would anywhere.  An error stops the init where it happened and is
 ;;; reported; the shell starts anyway.
 
-(define-module (editor init)
+(define-module (structured-scsh init)
   #:declarative? #f            ; load-init loads user files at run time
   #:export (init-path load-init))
 

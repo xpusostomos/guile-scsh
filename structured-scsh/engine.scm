@@ -23,7 +23,7 @@
 ;;; representable: a node simply IS a node.  Only the renderer knows about
 ;;; parentheses at all.
 
-(define-module (editor engine)
+(define-module (structured-scsh engine)
   #:use-module (ice-9 receive)
   #:export (make-locus locus-path locus-index locus-offset
             node? sym? element?

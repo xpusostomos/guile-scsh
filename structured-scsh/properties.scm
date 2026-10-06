@@ -1,4 +1,4 @@
-;;; editor/properties.scm -- the shell's user-settable properties.
+;;; structured-scsh/properties.scm -- the shell's user-settable properties.
 ;;;
 ;;; One global alist of (SYMBOL . VALUE) pairs, with a getter and a setter.
 ;;; This is a LEAF module: anything may import it, because it imports nothing
@@ -12,7 +12,7 @@
 ;;; when the .go was loaded, so any consumer that read the bare alist would
 ;;; see it forever empty; through a procedure the read is live.
 
-(define-module (editor properties)
+(define-module (structured-scsh properties)
   #:export (scsh-properties scsh-property scsh-property-set! scsh-prompt
             bourne-shell))
 
@@ -37,7 +37,7 @@
   value)
 
 ;;; (scsh-prompt #:text) -- the REPL prompt, from the 'prompt property.  A
-;;; lambda is CALLED, fresh each line, with #:TEXT saying which editor is
+;;; lambda is CALLED, fresh each line, with #:TEXT saying which structured-scsh is
 ;;; asking: #f structured, #t the unstructured line editor.  A string is the
 ;;; prompt in both modes.  Unset (or any other type) defaults to "scsh$ " in
 ;;; structured mode and "scsh> " in text mode.  A lambda that does not take

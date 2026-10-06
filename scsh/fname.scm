@@ -188,7 +188,7 @@
     (if (and (> len 0) (char=? #\~ (string-ref fname 0)))
 	(let ((tilde->homedir (lambda (end)
 				(if (= end 1)
-				    home-directory ; Just ~
+				    (getenv "HOME") ; Just ~
 				    (let* ((user (substring fname 1 end))
 					   (ui (name->user-info user)))
 				      (user-info:home-dir ui))))))
@@ -278,7 +278,7 @@
 	    (or (%homedir user)
 		(error "Cannot get user's home directory"
 		       user))))
-      home-directory))
+      (getenv "HOME")))
 
 
 ;;; (home-file [user] fname)
@@ -287,7 +287,7 @@
   (receive (dir fname)
 	   (if (pair? maybe-arg2)
 	       (values (home-dir arg1) (car maybe-arg2))
-	       (values home-directory  arg1))
+	       (values (getenv "HOME")  arg1))
     (string-append (file-name-as-directory dir) fname)))
 
 

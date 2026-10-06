@@ -1,23 +1,23 @@
-;;; editor/scsh.scm -- the scsh layer: what shell things mean structurally.
+;;; structured-scsh/scsh.scm -- the scsh layer: what shell things mean structurally.
 ;;;
 ;;; The editor proper (engine/render/repl) knows nothing about shells.  This
 ;;; module holds the scsh policy: what the first word of a line opens, and what
 ;;; the shell operators do.  Each operator is a pure restructuring of the tree,
 ;;; so none of them can produce a malformed line.
 
-(define-module (editor scsh)
+(define-module (structured-scsh scsh)
   #:use-module (ice-9 receive)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-13)    ; string-prefix?, string-contains
-  #:use-module (editor engine)
-  #:use-module (editor repl)     ; rule, the key-table row
-  #:use-module (editor properties)  ; bourne-shell, the ! escape's shell
+  #:use-module (structured-scsh engine)
+  #:use-module (structured-scsh repl)     ; rule, the key-table row
+  #:use-module (structured-scsh properties)  ; bourne-shell, the ! escape's shell
   #:export (seed line-datum shell-rules job-control?
             bourne-tree? bourne-line-datum))
 
 ;;; ---- small list helpers ----------------------------------------------------
 ;;; butlast/last are local; list-replace/splice/remove-at come from
-;;; (editor engine) and are DESTRUCTIVE -- do not redefine copying versions
+;;; (structured-scsh engine) and are DESTRUCTIVE -- do not redefine copying versions
 ;;; here, or half the tree ops would mutate and half would copy.
 
 (define (butlast lst)
@@ -630,7 +630,7 @@
        (member (car tree) (list "run" "&" "&&" "||"))))
 
 ;;; ---- the shell's rows of the key table --------------------------------------
-;;; Each operator is a RULE (see editor/repl.scm): it matches one character and
+;;; Each operator is a RULE (see structured-scsh/repl.scm): it matches one character and
 ;;; handles it only on a shell line at a form's end, DECLINING otherwise -- and
 ;;; a declined row lets the character fall through to the printer, which types
 ;;; it.  The guards live in the operators themselves (pipe/redirect/background

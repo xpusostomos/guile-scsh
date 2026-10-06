@@ -27,7 +27,7 @@ GUILE_CCACHEDIR := $(shell guile-config info siteccachedir)
 # --- install layout ---------------------------------------------------------
 # DESTDIR is honoured, so a package can stage into a chroot:
 #   make install DESTDIR=$(pkgdir) PREFIX=/usr
-PREFIX    ?= /usr/local
+PREFIX    ?= /usr
 BINDIR    ?= $(PREFIX)/bin
 SITEDIR   ?= $(PREFIX)/share/guile/site/$(EFFVER)
 CCACHEDIR ?= $(PREFIX)/lib/guile/$(EFFVER)/site-ccache
@@ -48,7 +48,7 @@ LOCALSITEDIR ?= $(LOCALPREFIX)/share/guile/site/$(EFFVER)
 # anything is imported, so it must not be compiled as a module.  bin/ holds
 # launchers, installed as they stand.
 
-DIRS    := scsh editor script structured-scsh
+DIRS    := scsh script structured-scsh
 SCRIPTS := script/prelude.scm
 MODULES := $(filter-out $(SCRIPTS),$(wildcard $(addsuffix /*.scm,$(DIRS))))
 GOS     := $(patsubst %.scm,build/%.go,$(MODULES))
@@ -75,10 +75,10 @@ build/deps.mk: $(MODULES) tools/mkdeps.scm
 # would otherwise linger beside the new one and still be found.
 install: all
 	install -d $(DESTDIR)$(SITEDIR) $(DESTDIR)$(CCACHEDIR) $(DESTDIR)$(BINDIR)
-	rm -rf $(DESTDIR)$(SITEDIR)/scsh $(DESTDIR)$(SITEDIR)/editor $(DESTDIR)$(SITEDIR)/script $(DESTDIR)$(SITEDIR)/structured-scsh
-	rm -rf $(DESTDIR)$(CCACHEDIR)/scsh $(DESTDIR)$(CCACHEDIR)/editor $(DESTDIR)$(CCACHEDIR)/script $(DESTDIR)$(CCACHEDIR)/structured-scsh
+	rm -rf $(DESTDIR)$(SITEDIR)/scsh $(DESTDIR)$(SITEDIR)/script $(DESTDIR)$(SITEDIR)/structured-scsh
+	rm -rf $(DESTDIR)$(CCACHEDIR)/scsh $(DESTDIR)$(CCACHEDIR)/script $(DESTDIR)$(CCACHEDIR)/structured-scsh
 	cp -r $(DIRS) $(DESTDIR)$(SITEDIR)/
-	cp -r build/scsh build/editor build/script build/structured-scsh $(DESTDIR)$(CCACHEDIR)/
+	cp -r build/scsh build/script build/structured-scsh $(DESTDIR)$(CCACHEDIR)/
 	install -m 755 bin/scsh $(DESTDIR)$(BINDIR)/scsh
 
 # A local install carries no .go: Guile compiles into the user's own cache the
@@ -86,7 +86,7 @@ install: all
 # it survives a Guile upgrade without anyone recompiling anything.
 install-local:
 	install -d $(LOCALSITEDIR) $(LOCALBINDIR)
-	rm -rf $(LOCALSITEDIR)/scsh $(LOCALSITEDIR)/editor $(LOCALSITEDIR)/script $(LOCALSITEDIR)/structured-scsh
+	rm -rf $(LOCALSITEDIR)/scsh $(LOCALSITEDIR)/script $(LOCALSITEDIR)/structured-scsh
 	cp -r $(DIRS) $(LOCALSITEDIR)/
 	install -m 755 bin/scsh $(LOCALBINDIR)/scsh
 
@@ -98,8 +98,8 @@ install-local:
 # is newer) but a user who wants them gone can remove
 # $(CACHEHOME)/guile/ccache/*/usr/share/guile/site/$(EFFVER) themselves.
 uninstall:
-	rm -rf $(DESTDIR)$(SITEDIR)/scsh $(DESTDIR)$(SITEDIR)/editor $(DESTDIR)$(SITEDIR)/script $(DESTDIR)$(SITEDIR)/structured-scsh
-	rm -rf $(DESTDIR)$(CCACHEDIR)/scsh $(DESTDIR)$(CCACHEDIR)/editor $(DESTDIR)$(CCACHEDIR)/script $(DESTDIR)$(CCACHEDIR)/structured-scsh
+	rm -rf $(DESTDIR)$(SITEDIR)/scsh $(DESTDIR)$(SITEDIR)/script $(DESTDIR)$(SITEDIR)/structured-scsh
+	rm -rf $(DESTDIR)$(CCACHEDIR)/scsh $(DESTDIR)$(CCACHEDIR)/script $(DESTDIR)$(CCACHEDIR)/structured-scsh
 	rm -f  $(DESTDIR)$(BINDIR)/scsh
 
 # A local install ships no .go: Guile compiles those sources into the user's
@@ -108,7 +108,7 @@ uninstall:
 # it -- and they are ours to remove, not just the sources.  (Guarded: an empty
 # LOCALSITEDIR would otherwise make the pattern match every cached tree.)
 uninstall-local:
-	rm -rf $(LOCALSITEDIR)/scsh $(LOCALSITEDIR)/editor $(LOCALSITEDIR)/script $(LOCALSITEDIR)/structured-scsh
+	rm -rf $(LOCALSITEDIR)/scsh $(LOCALSITEDIR)/script $(LOCALSITEDIR)/structured-scsh
 	rm -f  $(LOCALBINDIR)/scsh
 	@if [ -n "$(LOCALSITEDIR)" ]; then \
 	   rm -rf $(CACHEHOME)/guile/ccache/*$(LOCALSITEDIR); \

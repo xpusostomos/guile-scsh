@@ -1,4 +1,4 @@
-;;; editor/history.scm -- the line history, in memory and in ~/.scsh_history.
+;;; structured-scsh/history.scm -- the line history, in memory and in ~/.scsh_history.
 ;;;
 ;;; The FILE format is the user's: each entry is one READABLE datum beginning
 ;;; in the first column, either "(" (ending with its own closing ")") or ","
@@ -12,13 +12,13 @@
 ;;; back to the draft, as in bash.  An index points into the items, one past
 ;;; the last meaning "at the draft".
 
-(define-module (editor history)
+(define-module (structured-scsh history)
   #:use-module (ice-9 receive)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-13)   ; string-contains
-  #:use-module (editor engine)
-  #:use-module (editor render)
-  #:use-module (editor properties)
+  #:use-module (structured-scsh engine)
+  #:use-module (structured-scsh render)
+  #:use-module (structured-scsh properties)
   #:export (history-load! history-add! history-file history-previous history-next
             history-reset! history-items history-clear! history-search datum->tree
             match-span))
@@ -155,7 +155,7 @@
 ;;; UP: the previous item.  At the oldest, nothing moves.
 ;;;
 ;;; The item is COPIED on the way out.  The tree ops are destructive (see
-;;; editor/engine.scm), so handing out the stored tree itself would let the very
+;;; structured-scsh/engine.scm), so handing out the stored tree itself would let the very
 ;;; next keystroke write into history.  The copy keeps the entry pristine; a
 ;;; recalled line is the user's to edit as they like.
 (define (history-previous tree locus)

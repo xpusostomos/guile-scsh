@@ -1,4 +1,4 @@
-;;; editor/render.scm -- tree -> text, and where the cursor lands.
+;;; structured-scsh/render.scm -- tree -> text, and where the cursor lands.
 ;;;
 ;;; This is the ONLY place text is produced.  The canonical form is:
 ;;;
@@ -19,10 +19,10 @@
 ;;; mutable state anywhere now; note the fold is O(n^2) in string building,
 ;;; which is fine at line lengths.
 
-(define-module (editor render)
+(define-module (structured-scsh render)
   #:use-module (ice-9 receive)
   #:use-module (srfi srfi-13)
-  #:use-module (editor engine)
+  #:use-module (structured-scsh engine)
   #:export (render render-tree pieces))
 
 ;; A bare quote prefix hugs what follows it: '(1 2), not ' (1 2).

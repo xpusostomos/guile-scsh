@@ -1,4 +1,4 @@
-;;; editor/term.scm -- the raw terminal front-end.
+;;; structured-scsh/term.scm -- the raw terminal front-end.
 ;;;
 ;;; The only part of the editor that touches the tty: put it into raw mode, read
 ;;; keys (decoding the escape sequences the arrow keys send), and redraw one
@@ -9,7 +9,7 @@
 ;;; confuse the column arithmetic, and there is no SIGWINCH handling (every
 ;;; keypress redraws anyway).  Both are later work.
 
-(define-module (editor term)
+(define-module (structured-scsh term)
   #:use-module (system foreign)
   #:use-module (rnrs bytevectors)
   #:export (tty? with-raw-term read-key draw styled split-newlines leave-frame!

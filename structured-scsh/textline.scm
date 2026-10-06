@@ -1,4 +1,4 @@
-;;; editor/textline.scm -- the unstructured line editor.
+;;; structured-scsh/textline.scm -- the unstructured line editor
 ;;;
 ;;; ESC toggles between the structure editor and this one.  Here the line is
 ;;; plain text, edited the readline way: characters insert at the point,
@@ -15,12 +15,12 @@
 ;;; The datum becomes a tree with history's datum->tree, so committed lines
 ;;; enter the same history either editor recalls.
 
-(define-module (editor textline)
+(define-module (structured-scsh textline)
   #:use-module (ice-9 receive)
   #:use-module (ice-9 textual-ports)  ; get-string-all
-  #:use-module (editor term)
-  #:use-module (editor render)
-  #:use-module (editor history)
+  #:use-module (structured-scsh term)
+  #:use-module (structured-scsh render)
+  #:use-module (structured-scsh history)
   #:export (text-loop text-line text-commit-tree text-carry-tree))
 
 ;;; ---- the pure loop ----------------------------------------------------------
@@ -185,7 +185,7 @@
 ;;; standard shell.  The tree is the marker word ! hugging the command string
 ;;; ("!" "ls -l", rendered "!ls -l", stored as the readable datum
 ;;; (! "ls -l")); its meaning -- (run (SH -c "...")) -- lives in the shell
-;;; layer (editor/scsh.scm), and the structure editor's ! trigger opens the
+;;; layer (structured-scsh/scsh.scm), and the structure editor's ! trigger opens the
 ;;; same tree.  The command is never read as Scheme at all.
 
 ;;; ---- a committed line is pure Scheme ----------------------------------------

@@ -1,4 +1,4 @@
-;;; editor/repl.scm -- the structural REPL loop.
+;;; structured-scsh/repl.scm -- the structural REPL loop.
 ;;;
 ;;; Every key is handed to DISPATCH-KEY, a pure function from (tree locus key)
 ;;; to (tree' locus' action).  The action is 'continue to keep editing,
@@ -9,15 +9,15 @@
 ;;; tty.  Evaluating the committed tree is the caller's business -- the editor
 ;;; produces a well-formed tree and hands it over.
 
-(define-module (editor repl)
+(define-module (structured-scsh repl)
   #:use-module (ice-9 receive)
   #:use-module (ice-9 optargs)
   #:use-module (srfi srfi-9)      ; define-record-type
-  #:use-module (editor engine)
-  #:use-module (editor render)
-  #:use-module (editor term)
-  #:use-module (editor history)
-  #:use-module (editor properties)
+  #:use-module (structured-scsh engine)
+  #:use-module (structured-scsh render)
+  #:use-module (structured-scsh term)
+  #:use-module (structured-scsh history)
+  #:use-module (structured-scsh properties)
   #:export (make-rule rule? rule-match rule-handle core-rules dispatch-key step run-loop edit-line
             search-enter search-rescan search-accept C-r C-g))
 
@@ -30,11 +30,11 @@
 ;;;
 ;;; HANDLED? #f DECLINES -- the walk moves on to the next row -- so "assist,
 ;;; never block" is the walker's shape rather than a convention.  The rows are
-;;; ordered most-specific first: the shell's policy rows (from editor/scsh.scm,
+;;; ordered most-specific first: the shell's policy rows (from structured-scsh/scsh.scm,
 ;;; prepended by whoever runs the shell), then the editor's structural and
 ;;; control rows, then the printer, which always handles.  The table is passed
 ;;; through the whole machinery, so a user can supply a different one; a global
-;;; default is composed at the top (editor/run.scm).
+;;; default is composed at the top (structured-scsh/run.scm).
 (define-record-type <rule>
   (make-rule match handle)
   rule?
@@ -56,7 +56,7 @@
    (make-rule (lambda (k) (eq? k 'interrupt)) (lambda (t l k) (finish t l 'exit)))
    (make-rule (lambda (k) (eq? k 'left))      (lambda (t l k) (done t (move-left t l))))
    (make-rule (lambda (k) (eq? k 'right))     (lambda (t l k) (done t (move-right t l))))
-   ;; up/down recall the history (editor/history.scm): the structural move-up
+   ;; up/down recall the history (structured-scsh/history.scm): the structural move-up
    ;; and move-down keep their functions but no longer own these keys
    (make-rule (lambda (k) (eq? k 'up))
          (lambda (t l k) (receive (t2 l2) (history-previous t l) (done t2 l2))))

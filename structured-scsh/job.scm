@@ -18,7 +18,7 @@
 ;;; commands.  The commands are ordinary procedures -- (jobs), (fg 1), (bg 2),
 ;;; (kill-job 1) -- which is all the shell needs now that a line can be Scheme.
 
-(define-module (editor job)
+(define-module (structured-scsh job)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-9)
   #:use-module (srfi srfi-13)   ; string-map
@@ -26,7 +26,7 @@
   #:use-module (scsh procobj)     ; wait, wait/poll, wait/stopped-children, proc:pid
   #:use-module (scsh syscalls)    ; pid, set-process-group, signal-process-group
   #:use-module (scsh sighandlers) ; SIGCONT, SIGSTOP, SIGTERM
-  #:use-module (editor term)      ; tty-process-group, set-tty-process-group
+  #:use-module (structured-scsh term)      ; tty-process-group, set-tty-process-group
   #:export (job-start job-release! job-abandon!
             job-foreground! job-background!
             job? job:proc job:pid job:pgid job:command job:number job:state
