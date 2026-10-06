@@ -2,7 +2,7 @@
 !#
 ;;; tools/mkdeps.scm -- emit Makefile prerequisites for the module tree.
 ;;;
-;;;   tools/mkdeps.scm scsh/glob.scm editor/scsh.scm ... > build/deps.mk
+;;;   tools/mkdeps.scm scsh/glob.scm structured-scsh/scsh.scm ... > build/deps.mk
 ;;;
 ;;; A .go must be rebuilt when its own source changes, and when any module it
 ;;; uses changes: a module variable is resolved at run time, but a MACRO is
@@ -25,7 +25,7 @@
   (let* ((port (open-pipe* OPEN_READ "guild" "use2dot" file))
          (out  (get-string-all port)))
     (close-pipe port)
-    ;; edges look like:  "(editor scsh)" -> "(editor engine)";
+    ;; edges look like:  "(structured-scsh scsh)" -> "(structured-scsh engine)";
     (delete-duplicates
      (filter-map (lambda (m)
                    (let ((f (module->file (match:substring m 1))))

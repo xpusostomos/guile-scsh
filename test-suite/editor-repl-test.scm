@@ -7,7 +7,7 @@
 ;;;   make -C test-suite engine
 
 (use-modules (ice-9 receive) (ice-9 optargs) (srfi srfi-1))
-(use-modules (editor engine) (editor render) (editor repl) (editor scsh))
+(use-modules (structured-scsh engine) (structured-scsh render) (structured-scsh repl) (structured-scsh scsh))
 
 (define failures '())
 (define (check label expect got)

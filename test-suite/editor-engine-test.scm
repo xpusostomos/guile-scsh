@@ -1,4 +1,4 @@
-;;; editor-engine-test.scm -- tests for editor/engine.scm + editor/render.scm
+;;; editor-engine-test.scm -- tests for structured-scsh/engine.scm + structured-scsh/render.scm
 ;;;
 ;;; These assert on the STRUCTURE (tree -> sexp), except where the renderer is
 ;;; the thing under test.  No terminal, no readline, no processes.
@@ -7,7 +7,7 @@
 ;;;   guile -q -L . test-suite/editor-engine-test.scm
 
 (use-modules (ice-9 receive))
-(use-modules (editor engine) (editor render))
+(use-modules (structured-scsh engine) (structured-scsh render))
 
 (define failures '())
 (define (check label expect got)

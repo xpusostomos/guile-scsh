@@ -8,8 +8,8 @@
 ;;; A temp file stands in for ~/.scsh_history throughout.
 
 (use-modules (ice-9 receive) (ice-9 rdelim) (srfi srfi-1))
-(use-modules (editor engine) (editor render) (editor repl) (editor scsh)
-             (editor history) (editor properties) (editor textline))
+(use-modules (structured-scsh engine) (structured-scsh render) (structured-scsh repl) (structured-scsh scsh)
+             (structured-scsh history) (structured-scsh properties) (structured-scsh textline))
 
 (define failures '())
 (define (contains? text s) (if (string-contains text s) #t #f))

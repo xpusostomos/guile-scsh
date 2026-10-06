@@ -2,12 +2,12 @@
 ;;;
 ;;; One global alist of (SYMBOL . VALUE) pairs, with a getter and a setter.
 ;;; This is a LEAF module: anything may import it, because it imports nothing
-;;; -- putting the properties in (editor scsh) instead would make a cycle
+;;; -- putting the properties in (structured-scsh scsh) instead would make a cycle
 ;;; (scsh -> repl -> history -> scsh).  Case-insensitive history search, e.g.
 ;;; (scsh-property-set! 'completion-ignore-case #t), reads its switch here.
 ;;;
 ;;; THE ALIST VARIABLE IS PRIVATE, and (scsh-properties) is its getter --
-;;; the same shape as job-control? in (editor scsh).  Guile's compiled
+;;; the same shape as job-control? in (structured-scsh scsh).  Guile's compiled
 ;;; modules fold reads of an IMPORTED rebindable variable to the value it had
 ;;; when the .go was loaded, so any consumer that read the bare alist would
 ;;; see it forever empty; through a procedure the read is live.

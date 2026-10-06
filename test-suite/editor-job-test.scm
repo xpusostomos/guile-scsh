@@ -1,6 +1,6 @@
-;;; editor-job-test.scm -- tests for editor/job.scm (the job lifecycle).
+;;; editor-job-test.scm -- tests for structured-scsh/job.scm (the job lifecycle).
 ;;;
-;;; No terminal is needed: every tty operation in (editor term) is a no-op when
+;;; No terminal is needed: every tty operation in (structured-scsh term) is a no-op when
 ;;; there is no terminal, so the lifecycle can be exercised from a pipe.  What
 ;;; these pin down is the handshake: that a child is parked before it runs,
 ;;; that it is in its own process group by the time job-start returns, and that
@@ -13,7 +13,7 @@
 (use-modules (scsh scsh) (scsh procobj) (scsh syscalls) (scsh sighandlers))
 (use-modules (srfi srfi-13))
 (use-modules (ice-9 rdelim))
-(use-modules (editor job) (editor term))
+(use-modules (structured-scsh job) (structured-scsh term))
 
 (define failures '())
 (define (check label expect got)
@@ -275,7 +275,7 @@
 (define marker (string-append base ".exit"))
 (when (file-exists? marker) (delete-file marker))
 (system (string-append
-         "guile -q -L . -c '(use-modules (editor term))"
+         "guile -q -L . -c '(use-modules (structured-scsh term))"
          " (call-with-restored-terminal"
          "  (lambda () (dynamic-wind (lambda () #t)"
          "                           (lambda () (exit 0))"

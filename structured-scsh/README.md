@@ -1,4 +1,4 @@
-# editor/ — the structure editor
+# structured-scsh/ — the structure editor
 
 The document is a **tree**, never text.
 
@@ -43,7 +43,7 @@ There are exactly two kinds of edit:
   toplevel inside which everything works as at the prompt (typing `ls` opens a
   `run`, typing `(` opens a Scheme form; the shell's seed is consulted at any
   of the begin body's toplevel slots).  **ESC** switches the shell to the
-  *unstructured* line editor (`editor/textline.scm`) — a plain text line with
+  *unstructured* line editor (`structured-scsh/textline.scm`) — a plain text line with
   readline-style keys (characters insert at the point, backspace/delete,
   left/right/home/end, UP/DOWN recall the same history, **C-r** is the same
   backward search the structure editor runs — the frame is
@@ -140,7 +140,7 @@ There are exactly two kinds of edit:
 - `(structured-scsh main)` — the shell itself, `structured-scsh/main.scm`: the
   editor used as an scsh REPL.  It starts each line as `(run ())` with the locus
   in the command form and evaluates the committed tree.  It is a module, not
-  `editor/run.scm` as it once was: it is what the editor's modules are FOR, so
+  the loaded `run.scm` it once was: it is what the editor's modules are FOR, so
   it lives outside them, and being a module it is compiled into the site ccache
   rather than into each user's cache.  `bin/scsh` imports it and calls `(main)`.
 
@@ -241,7 +241,7 @@ Enter-line fallback — and both use Guile's own `read`.  There is no parser her
 `bin/scsh` finds the tree from wherever it is invoked: the root when it is in a
 checkout, the site directory when it is installed.  The last two forms never
 load any of this -- a script gets scsh's forms and `glob1` from
-`script/prelude.scm` and nothing from `(editor ...)`.
+`script/prelude.scm` and nothing from `(structured-scsh ...)`.
 
 and, with no terminal (keys piped in), which is also how it can be tested:
 

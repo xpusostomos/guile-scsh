@@ -1,13 +1,13 @@
 ;;; editor-properties-test.scm -- the shell's user-settable property list.
 ;;;
-;;;   make -C test-suite properties
+;;;   guile -q -L . test-suite/editor-properties-test.scm   (from the repo root)
 ;;;
 ;;; The alist holds (SYMBOL . VALUE) pairs: an unset symbol reads as #f,
 ;;; the setter replaces an existing entry, and (scsh-properties) is the whole
-;;; alist.  The alist itself is module-private -- (editor properties.scm) for
+;;; alist.  The alist itself is module-private -- (structured-scsh properties.scm) for
 ;;; why -- so visibility is checked through the procedures.
 
-(use-modules (ice-9 optargs) (editor properties))
+(use-modules (ice-9 optargs) (structured-scsh properties))
 
 (define failures '())
 

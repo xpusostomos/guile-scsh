@@ -1,11 +1,11 @@
 ;;; editor-init-test.scm -- the init file: where it lives, what it can do.
 ;;;
-;;;   make -C test-suite init
+;;;   guile -q -L . test-suite/editor-init-test.scm   (from the repo root)
 ;;;
 ;;; A temp HOME and a temp XDG_CONFIG_HOME stand in for the real ones: every
 ;;; candidate path the shell looks at is built under them.
 
-(use-modules (editor init) (editor properties) (srfi srfi-1))
+(use-modules (structured-scsh init) (structured-scsh properties) (srfi srfi-1))
 
 (define failures '())
 (define (check label expect got)

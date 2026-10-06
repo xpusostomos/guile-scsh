@@ -10,7 +10,7 @@
 ;;; Wrapped in a define-module they would land in a module of their own and the
 ;;; user would see none of them.
 ;;;
-;;; NOTHING from (editor ...) belongs here.  The interactive machinery is not
+;;; NOTHING from (structured-scsh ...) belongs here.  The interactive machinery is not
 ;;; part of running a script, and importing it would drag the whole editor into
 ;;; every script's startup.
 

@@ -1,9 +1,11 @@
-;;; script/glob1.scm -- glob, the shell's way, for scripts and for the editor.
+;;; glob1.scm -- glob, the shell's way, for scripts and for the editor.
 ;;;
-;;; Everything in this directory is usable from a SCRIPT as well as from the
-;;; interactive editor: nothing here may import the editor's machinery (engine,
-;;; render, repl, term, job, history, textline).  The dependency runs one way --
-;;; the editor may use these, these may not use the editor.
+;;; The policy a shell user expects, in a module of its own: (scsh glob) is the
+;;; general globber, this is the one the shell and a script actually want.  It
+;;; lives here with the rest of (scsh ...) because a SCRIPT needs it too, and
+;;; nothing in scsh/ may import the editor's machinery (engine, render, repl,
+;;; term, job, history, textline).  The dependency runs one way -- the editor
+;;; may use these, these may not use the editor.
 
 (define-module (scsh glob1)
   #:use-module (scsh glob)

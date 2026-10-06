@@ -3,8 +3,8 @@
 ;;;   make -C test-suite engine
 
 (use-modules (ice-9 receive) (ice-9 optargs) (srfi srfi-1))
-(use-modules (editor engine) (editor render) (editor repl) (editor scsh)
-             (editor properties))
+(use-modules (structured-scsh engine) (structured-scsh render) (structured-scsh repl) (structured-scsh scsh)
+             (structured-scsh properties))
 
 ;;; the shell's rows, with the old decline protocol: HANDLED? tells whether an
 ;;; operator took the key (the walker itself hides declining behind the
@@ -465,7 +465,7 @@
 ;;; The cursor's own position is not what decides: anywhere inside a command --
 ;;; its start, mid-word, inside a glob's pattern -- | and > walk up to the stage
 ;;; or command the cursor is in and act there (pipe-handled? / up-target in
-;;; editor/scsh.scm).  The older "at a form's start an operator is just an atom"
+;;; structured-scsh/scsh.scm).  The older "at a form's start an operator is just an atom"
 ;;; rule is gone; this is what the epf rework settled on.
 
 (receive (t l handled)

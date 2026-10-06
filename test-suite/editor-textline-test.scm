@@ -1,14 +1,14 @@
 ;;; editor-textline-test.scm -- the unstructured text editor.
 ;;;
-;;;   make -C test-suite textline
+;;;   guile -q -L . test-suite/editor-textline-test.scm   (from the repo root)
 ;;;
-;;; The editor is a pure loop (editor/textline.scm): keys come from a list,
+;;; The editor is a pure loop (structured-scsh/textline.scm): keys come from a list,
 ;;; the display is a stub, and there is no terminal at all.  A committed line
 ;;; is pure Scheme, read and committed.
 
 (use-modules (ice-9 receive) (srfi srfi-1))
-(use-modules (editor engine) (editor render) (editor history) (editor textline)
-             (editor scsh) (editor properties))
+(use-modules (structured-scsh engine) (structured-scsh render) (structured-scsh history) (structured-scsh textline)
+             (structured-scsh scsh) (structured-scsh properties))
 
 (define failures '())
 
