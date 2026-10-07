@@ -5,8 +5,9 @@ an interactive shell.
 
 The way it works is the user isn't typing just text, but the user types
 into a scheme structured editor. Scheme forms are always balanced. various
-keys help the user rearrange the form. TAB rearranges the parenthesis 
-balance of the form. | sets up an scsh pipeline form. & sets up a background 
+keys help the user rearrange the form. M-TAB rearranges the parenthesis 
+balance of the form. TAB completes the word at the cursor as a file name, the
+way bash does it. | sets up an scsh pipeline form. & sets up a background 
 form. Also the user can type various plain scheme to make things happen.
 ,variable allows you to print a regular variable.
 

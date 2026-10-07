@@ -17,6 +17,7 @@
 
 (define-module (structured-scsh textline)
   #:use-module (ice-9 receive)
+  #:use-module (ice-9 optargs)
   #:use-module (ice-9 textual-ports)  ; get-string-all
   #:use-module (structured-scsh term)
   #:use-module (structured-scsh render)
@@ -31,73 +32,90 @@
 ;;; items, one past the last meaning "showing the draft"; the DRAFT is the
 ;;; buffer as it was when recall began.
 
-(define (text-loop key-reader draw initial-text . maybe-sdraw)
-  (let ((search-draw (if (pair? maybe-sdraw) (car maybe-sdraw) #f)))
-    (let lp ((buf initial-text)
-             (pt  (string-length initial-text))
-             (idx (length (history-items)))
-             (draft "")
-             (pending #f))            ; a key the search accepted and left over
-      (draw buf pt)
-      (let ((key (or pending (key-reader))))
-        (cond
-          ((eq? key 'enter)    (values buf 'evaluate))
-          ((eq? key 'escape)   (values buf 'structured))
-          ((eq? key 'interrupt) (values buf 'interrupt))
-          ;; C-z at the prompt is inert, as bash's is: the line stays
-          ;; C-d is bash's: forward-delete, or end the shell on an empty line
-          ((eq? key 'eof)
-           (if (string-null? buf)
-               (values buf 'exit)
-               (lp (string-append (substring buf 0 pt)
-                                  (substring buf (+ pt 1)))
-                   pt idx draft #f)))
-          ((eq? key 'left)     (lp buf (max 0 (- pt 1)) idx draft #f))
-          ((eq? key 'right)    (lp buf (min (string-length buf) (+ pt 1)) idx draft #f))
-          ((eq? key 'home)     (lp buf 0 idx draft #f))
-          ((eq? key 'end)      (lp buf (string-length buf) idx draft #f))
-          ((eq? key 'delete)   ; the Del key: forward delete
-           (if (< pt (string-length buf))
-               (lp (string-append (substring buf 0 pt)
-                                  (substring buf (+ pt 1)))
-                   pt idx draft #f)
-               (lp buf pt idx draft #f)))
-          ((eq? key 'backspace)
-           (if (positive? pt)
-               (lp (string-append (substring buf 0 (- pt 1))
-                                  (substring buf pt))
-                   (- pt 1) idx draft #f)
-               (lp buf pt idx draft #f)))
-          ((eq? key 'up)       ; recall: the previous history item
-           (if (zero? idx)
-               (lp buf pt idx draft #f)            ; nothing older
-               (lp (render-tree (list-ref (history-items) (- idx 1)))
-                   (string-length (render-tree
-                                   (list-ref (history-items) (- idx 1))))
-                   (- idx 1)
-                   (if (= idx (length (history-items))) buf draft)
-                   #f)))
-          ((eq? key 'down)     ; recall: the next item, or back to the draft
-           (if (= idx (length (history-items)))
-               (lp buf pt idx draft #f)            ; nothing newer
-               (let ((n (+ idx 1)))
-                 (if (= n (length (history-items)))
-                     (lp draft (string-length draft) n draft #f)
-                     (let ((s (render-tree (list-ref (history-items) n))))
-                       (lp s (string-length s) n draft #f))))))
-          ((equal? key C-r)    ; the backward search (text-search below)
-           (receive (b a pk) (text-search key-reader search-draw buf)
-             (if (eq? a 'abort)
-                 (lp b pt idx draft #f)         ; the line as C-r found it
-                 (lp b (string-length b) idx draft pk))))
-          ;; a printable character inserts at the point; anything else the
-          ;; terminal sent is ignored
-          ((and (char? key) (char>=? key #\space))
-           (lp (string-append (substring buf 0 pt)
-                              (string key)
-                              (substring buf pt))
-               (+ pt 1) idx draft #f))
-          (else (lp buf pt idx draft #f)))))))
+;;; Tab completes the word before the point, through the shell's hook, exactly
+;;; as it does in the structure editor: COMPLETE is (buffer point) -> (values
+;;; buffer point candidates) -- a LIST of candidates means nothing was
+;;; completed, which is the bell, and on a second Tab that could not extend the
+;;; word either, the listing (CANDIDATES, called with the names and whether to
+;;; list them).  STALLED? is that "the previous Tab made no progress" state,
+;;; carried across Tabs the way the regroup direction is carried across M-TABs
+;;; in the structure editor.
+(define* (text-loop key-reader draw initial-text
+                    #:key (search-draw #f) (complete #f) (candidates #f))
+  (let lp ((buf initial-text)
+           (pt  (string-length initial-text))
+           (idx (length (history-items)))
+           (draft "")
+           (pending #f)             ; a key the search accepted and left over
+           (stalled? #f))           ; the previous Tab could not extend the word
+    (draw buf pt)
+    (let ((key (or pending (key-reader))))
+      (cond
+        ((eq? key 'enter)    (values buf 'evaluate))
+        ((eq? key 'escape)   (values buf 'structured))
+        ((eq? key 'interrupt) (values buf 'interrupt))
+        ((eq? key 'tab)
+         (if complete
+             (receive (b p names) (complete buf pt)
+               (if names
+                   (begin (when candidates (candidates names stalled?))
+                          (lp b p idx draft #f #t))
+                   (lp b p idx draft #f #f)))
+             (lp buf pt idx draft #f #f)))
+        ;; C-z at the prompt is inert, as bash's is: the line stays
+        ;; C-d is bash's: forward-delete, or end the shell on an empty line
+        ((eq? key 'eof)
+         (if (string-null? buf)
+             (values buf 'exit)
+             (lp (string-append (substring buf 0 pt)
+                                (substring buf (+ pt 1)))
+                 pt idx draft #f #f)))
+        ((eq? key 'left)     (lp buf (max 0 (- pt 1)) idx draft #f #f))
+        ((eq? key 'right)    (lp buf (min (string-length buf) (+ pt 1)) idx draft #f #f))
+        ((eq? key 'home)     (lp buf 0 idx draft #f #f))
+        ((eq? key 'end)      (lp buf (string-length buf) idx draft #f #f))
+        ((eq? key 'delete)   ; the Del key: forward delete
+         (if (< pt (string-length buf))
+             (lp (string-append (substring buf 0 pt)
+                                (substring buf (+ pt 1)))
+                 pt idx draft #f #f)
+             (lp buf pt idx draft #f #f)))
+        ((eq? key 'backspace)
+         (if (positive? pt)
+             (lp (string-append (substring buf 0 (- pt 1))
+                                (substring buf pt))
+                 (- pt 1) idx draft #f #f)
+             (lp buf pt idx draft #f #f)))
+        ((eq? key 'up)       ; recall: the previous history item
+         (if (zero? idx)
+             (lp buf pt idx draft #f #f)            ; nothing older
+             (lp (render-tree (list-ref (history-items) (- idx 1)))
+                 (string-length (render-tree
+                                 (list-ref (history-items) (- idx 1))))
+                 (- idx 1)
+                 (if (= idx (length (history-items))) buf draft)
+                 #f #f)))
+        ((eq? key 'down)     ; recall: the next item, or back to the draft
+         (if (= idx (length (history-items)))
+             (lp buf pt idx draft #f #f)            ; nothing newer
+             (let ((n (+ idx 1)))
+               (if (= n (length (history-items)))
+                   (lp draft (string-length draft) n draft #f #f)
+                   (let ((s (render-tree (list-ref (history-items) n))))
+                     (lp s (string-length s) n draft #f #f))))))
+        ((equal? key C-r)    ; the backward search (text-search below)
+         (receive (b a pk) (text-search key-reader search-draw buf)
+           (if (eq? a 'abort)
+               (lp b pt idx draft #f #f)     ; the line as C-r found it
+               (lp b (string-length b) idx draft pk #f))))
+        ;; a printable character inserts at the point; anything else the
+        ;; terminal sent is ignored
+        ((and (char? key) (char>=? key #\space))
+         (lp (string-append (substring buf 0 pt)
+                            (string key)
+                            (substring buf pt))
+             (+ pt 1) idx draft #f #f))
+        (else (lp buf pt idx draft #f #f))))))
 
 (define C-r (integer->char 18))
 (define C-g (integer->char 7))
@@ -152,13 +170,15 @@
          (values (the-match pos failed) 'accept key))))))
 
 ;;; the same loop on the terminal
-(define* (text-line #:key (prompt "scsh$ ") (initial ""))
+(define* (text-line #:key (prompt "scsh$ ") (initial "") (complete #f) (candidates #f))
   (with-raw-term
    (lambda ()
      (receive (text action)
          (text-loop read-key
                     (lambda (buf pt) (draw prompt buf pt 0 '()))
                     initial
+                    #:complete complete #:candidates candidates
+                    #:search-draw
                     ;; bash's C-r frame: the query rides in the prompt, the
                     ;; match is the line, and only the matched span is in
                     ;; reverse video -- the same frame the structure editor's

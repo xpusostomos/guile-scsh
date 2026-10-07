@@ -8,7 +8,7 @@
 
 (use-modules (ice-9 receive) (srfi srfi-1))
 (use-modules (structured-scsh engine) (structured-scsh render) (structured-scsh history) (structured-scsh textline)
-             (structured-scsh scsh) (structured-scsh properties))
+             (structured-scsh scsh) (structured-scsh properties) (structured-scsh complete))
 
 (define failures '())
 
@@ -36,7 +36,29 @@
              (lambda (buf pt) #f)
              initial
              ;; the search frames, oldest first, for the checks below
-             (lambda (q m f) (set! *frames* (cons (list q m f) *frames*)))))
+             #:search-draw (lambda (q m f) (set! *frames* (cons (list q m f) *frames*)))))
+
+;;; the same, with the shell's Tab hook (structured-scsh/complete.scm): what the
+;;; candidates hook was told lands in *candidates*, oldest first -- (NAMES LIST?)
+;;; -- exactly as in the structure editor's suite
+(define *candidates* '())
+
+(define (completing-session keys initial complete)
+  (history-file #f)
+  (history-clear!)
+  (set! *candidates* '())
+  (receive (text action)
+      (text-loop (lambda ()
+                   (let ((k (if (pair? keys) (car keys) 'enter)))
+                     (when (pair? keys) (set! keys (cdr keys)))
+                     k))
+                 (lambda (buf pt) #f)
+                 initial
+                 #:complete complete
+                 #:candidates (lambda (names list?)
+                                (set! *candidates* (cons (list names list?) *candidates*))))
+    (set! *candidates* (reverse *candidates*))
+    (values text action)))
 
 (define Cr (integer->char 18))
 (define Cg (integer->char 7))
@@ -237,6 +259,60 @@
          '("h" "(run (echo hi))" #f) (car *frames*))
   (check "  and enter commits the still-matching line"
          "(run (echo hi))" text))
+
+;;; ---- Tab completes a file name ------------------------------------------------
+;;; The same shell hook the structure editor takes (structured-scsh/complete.scm),
+;;; against a text line: the word before the point is replaced, a FILE takes
+;;; bash's separator and a directory its slash, and a second Tab that cannot
+;;; extend the word lists the matches.  Every expectation is bash's, measured.
+
+(define dir (string-append "/tmp/scsh-textline-complete-" (number->string (getpid))))
+
+(define (touch path)
+  (let ((p (open-file path "w"))) (close-port p)))
+
+(mkdir dir #o755)
+(mkdir (string-append dir "/deep") #o755)
+(mkdir (string-append dir "/documents") #o755)
+(touch (string-append dir "/data.txt"))
+(touch (string-append dir "/docu.txt"))
+(chdir dir)
+
+;; "doc" is shared by a file and a directory, so it extends and no further
+(receive (text a) (completing-session (append (string->list "ls doc") (list 'tab)) "" text-complete)
+  (check "Tab extends the word as far as it goes" "ls docu" text)
+  (check "and says nothing when it could"         '() *candidates*))
+
+(receive (text a) (completing-session (append (string->list "ls data") (list 'tab)) "" text-complete)
+  (check "one match completes the word"        "ls data.txt " text)
+  (check "with bash's separator after a file"  12 (string-length text)))
+
+(receive (text a) (completing-session (append (string->list "ls deep") (list 'tab)) "" text-complete)
+  (check "a directory gets a slash and no separator" "ls deep/" text))
+
+(receive (text a) (completing-session
+                   (append (string->list "(run (ls doc") (list 'tab)) "" text-complete)
+  (check "the word after a ( is the one completed" "(run (ls docu" text))
+
+;; an empty word completes to what EVERY name shares -- here "d" (bash: measured)
+(receive (text a) (completing-session (append (string->list "ls ") (list 'tab)) "" text-complete)
+  (check "an empty word extends to the common prefix" "ls d" text))
+
+(receive (text a) (completing-session (append (string->list "ls zzz") (list 'tab)) "" text-complete)
+  (check "no match leaves the line alone" "ls zzz" text)
+  (check "and rings the bell" '((() #f)) *candidates*))
+
+;; two Tabs that cannot extend the word: the first rings, the second lists
+(receive (text a) (completing-session
+                   (append (string->list "ls docu") (list 'tab 'tab)) "" text-complete)
+  (check "the second Tab that cannot extend lists" '(#f #t) (map cadr *candidates*))
+  (check "and the line is where it was" "ls docu" text))
+(check "the listing shows the last segment only"
+       (list "documents/" "docu.txt") (car (car *candidates*)))
+
+;; the editor ignores Tab when no completion hook is given it (as it always did)
+(receive (text a) (session (append (string->list "ls doc") (list 'tab)) "")
+  (check "Tab with no hook is ignored" "ls doc" text))
 
 ;;; ---- verdict -----------------------------------------------------------------
 

@@ -13,6 +13,8 @@
   #:use-module (system foreign)
   #:use-module (rnrs bytevectors)
   #:export (tty? with-raw-term read-key draw styled split-newlines leave-frame!
+            terminal-width terminal-height show-candidates candidate-rows
+            page-rows completion-query?
             tty-process-group set-tty-process-group call-with-cooked-terminal
             ignore-terminal-stop! restore-terminal! call-with-restored-terminal))
 
@@ -161,28 +163,30 @@
 
 (define (read-escape port)
   (let ((c1 (wait-char port)))
-    (if (not c1)
-        'escape
-        (if (or (char=? c1 #\return) (char=? c1 #\newline))
-            'm-return                         ; M-RET: a new line, not a commit
-            (if (or (char=? c1 #\[) (char=? c1 #\O))
-            (let ((c2 (wait-char port)))
-              (cond ((not c2) 'escape)
-                    ((char=? c2 #\A) 'up)
-                    ((char=? c2 #\B) 'down)
-                    ((char=? c2 #\C) 'right)
-                    ((char=? c2 #\D) 'left)
-                    ((char=? c2 #\H) 'home)
-                    ((char=? c2 #\F) 'end)
-                    ((memv c2 (list #\1 #\3 #\4 #\7 #\8))
-                     (let ((c3 (wait-char port)))
-                       (if (and c3 (char=? c3 #\~))
-                           (cond ((char=? c2 #\3) 'delete)
-                                 ((or (char=? c2 #\1) (char=? c2 #\7)) 'home)
-                                 (else 'end))
-                           'escape)))
-                    (else 'escape)))
-            'escape)))))
+    (cond
+      ((not c1) 'escape)
+      ;; M-RET is a new line, not a commit; M-TAB is the regroup key (Tab itself
+      ;; is the completion key now -- see the completion note in repl.scm)
+      ((or (char=? c1 #\return) (char=? c1 #\newline)) 'm-return)
+      ((char=? c1 #\tab) 'm-tab)
+      ((or (char=? c1 #\[) (char=? c1 #\O))
+       (let ((c2 (wait-char port)))
+         (cond ((not c2) 'escape)
+               ((char=? c2 #\A) 'up)
+               ((char=? c2 #\B) 'down)
+               ((char=? c2 #\C) 'right)
+               ((char=? c2 #\D) 'left)
+               ((char=? c2 #\H) 'home)
+               ((char=? c2 #\F) 'end)
+               ((memv c2 (list #\1 #\3 #\4 #\7 #\8))
+                (let ((c3 (wait-char port)))
+                  (if (and c3 (char=? c3 #\~))
+                      (cond ((char=? c2 #\3) 'delete)
+                            ((or (char=? c2 #\1) (char=? c2 #\7)) 'home)
+                            (else 'end))
+                      'escape)))
+               (else 'escape))))
+      (else 'escape))))
 
 ;;; Wait until there is something to read, in short steps rather than one
 ;;; blocking read.  Guile runs a Scheme signal handler only at a safe point, and
@@ -296,3 +300,164 @@
         (when (> c 0)
           (display (string-append "\x1b[" (number->string c) "C"))))
       (force-output))))
+
+;;; ---- the completion listing -------------------------------------------------
+;;; Bash's frame, drawn the same way: the bell first (the completion was
+;;; ambiguous), then -- on the second Tab, LIST? -- the matches UNDER the line,
+;;; and the next DRAW prints the prompt and the line again below them.  The
+;;; matches are already on screen above; nothing is said twice.
+
+(define ioctl (pointer->procedure int (dynamic-func "ioctl" libc)
+                                  (list int unsigned-long '*)))
+(define TIOCGWINSZ #x5413)                ; Linux's, as the termios constants are
+
+;;; The terminal's size, as (COLUMNS . ROWS); 80x24 when there is no answer to
+;;; get (no terminal, or a size the kernel will not give up).
+(define (terminal-size)
+  (let ((ws (make-bytevector 8 0)))
+    (if (or (not (tty? 0))
+            (< (ioctl 0 TIOCGWINSZ (bytevector->pointer ws)) 0))
+        (cons 80 24)
+        ;; struct winsize { unsigned short ws_row, ws_col, ws_xpixel, ... }
+        (let ((rows (bytevector-u16-native-ref ws 0))
+              (cols (bytevector-u16-native-ref ws 2)))
+          (cons (if (zero? cols) 80 cols) (if (zero? rows) 24 rows))))))
+
+(define (terminal-width) (car (terminal-size)))
+(define (terminal-height) (cdr (terminal-size)))
+
+;;; The matches laid out the way readline lays them out, which was measured on a
+;;; real bash rather than guessed: filled DOWN the columns and then across, each
+;;; entry padded to the longest name plus two, in as many columns as the width
+;;; holds.
+;;;
+;;; The column count is readline's arithmetic, and the "- 1" is the part that
+;;; has to be measured rather than reasoned about: the last column of the
+;;; terminal is not usable for it.  24 six-character names (the column width is
+;;; therefore 8) come out as these, and every one of them is what bash printed:
+;;;
+;;;   width   columns   rows   the first row of the listing
+;;;     40       4        6    file01  file07  file13  file19
+;;;     60       7        4    file01  file05  file09  file13  file17  file21
+;;;     70       8        3    file01  file04  ...  file22
+;;;     80       9        3    the same eight names, then two empty columns
+;;;     96      11        3    the same again
+;;;    100      12        2    file01  file03  ...  file23
+;;;
+;;; (A column with nothing in its last row prints nothing, which is why 9 and 10
+;;; columns look alike.)
+(define (pad-to s n)
+  (string-append s (make-string (max 0 (- n (string-length s))) #\space)))
+
+;;; One line of the listing: each entry padded to the column width so the
+;;; columns line up -- EXCEPT the last, which is left as it is.  Padding the
+;;; last one is what makes a line reach past the terminal's width and wrap, and
+;;; a wrapped line is what a name too long for the columns looks like: bash
+;;; gives such a name a line of its own, unpadded, and this does too (one
+;;; column, one entry, nothing to pad for).
+(define (join-columns entries cw)
+  (let lp ((es entries) (out '()))
+    (if (null? es)
+        (string-concatenate (reverse out))
+        (lp (cdr es)
+            (cons (if (null? (cdr es)) (car es) (pad-to (car es) cw)) out)))))
+
+(define (candidate-rows names width)
+  (let* ((cw   (+ (apply max (map string-length names)) 2))
+         (cols (max 1 (quotient (- width 1) cw)))
+         (n    (length names))
+         (rows (max 1 (quotient (+ n (- cols 1)) cols)))
+         (v    (list->vector names)))
+    (let row ((r 0) (acc '()))
+      (if (= r rows)
+          (reverse acc)
+          (row (+ r 1)
+               (cons (join-columns (let col ((c 0) (acc* '()))
+                                     (if (= c cols)
+                                         (reverse acc*)
+                                         (let ((i (+ r (* c rows))))   ; down, then across
+                                           (col (+ c 1)
+                                                (if (< i n)
+                                                    (cons (vector-ref v i) acc*)
+                                                    acc*)))))
+                                   cw)
+                     acc))))))
+
+;;; readline asks before printing a great many of them -- completion-query-items,
+;;; whose default is 100, and the test is >= rather than > (measured on bash:
+;;; 99 matches list straight away, 100 ask).  Answering no leaves the question on
+;;; screen and the line is drawn again below it, which is bash's frame.
+(define %completion-query-items% 100)
+
+(define (completion-query? n)
+  (>= n %completion-query-items%))
+
+;;; readline's yes-or-no: y, Y and space are yes, n, N and rubout are no, and
+;;; any other key is a ding with the question still up (bash's Tab rings and
+;;; asks again).
+(define (y-or-n-key?)
+  (let lp ()
+    (let ((k (read-key)))
+      (cond ((or (eqv? k #\y) (eqv? k #\Y) (eqv? k #\space)) #t)
+            ((or (eqv? k #\n) (eqv? k #\N) (eq? k 'backspace)) #f)
+            (else (display "\a") (force-output) (lp))))))
+
+;;; ---- paging a long listing ---------------------------------------------------
+;;; Readline pages its own listing, and this is that pager, measured on bash: a
+;;; screenful is printed and then "--More--" on the LAST line, SPACE brings the
+;;; next screenful (the prompt line is reused, so each one shows another
+;;; height-1 rows), RET brings ONE more line, `q` stops and leaves the line to
+;;; be drawn again, and any other key is a ding with "--More--" still waiting.
+;;; The last page simply ends -- there is no "--More--" after it.
+;;;
+;;; (Measured at 24 rows and again at 10: 23 rows then "--More--", 9 rows then
+;;; "--More--".)
+(define (page-rows rows height key-reader)
+  (let* ((per (max 1 (- height 1)))       ; the last line is the --More-- line
+         (v   (list->vector rows))
+         (n   (length rows)))
+    (define (print-from i count)          ; -> where it stopped
+      (let lp ((j i) (left count))
+        (if (or (>= j n) (<= left 0))
+            j
+            (begin
+              (display "\r\x1b[K\r")      ; the --More-- line is printed over
+              (display (vector-ref v j))
+              (display "\r\n")
+              (lp (+ j 1) (- left 1))))))
+    (let lp ((i 0) (count #f))            ; #f: the first page fills the screen
+      (let ((i* (print-from i (or count per))))
+        (if (>= i* n)
+            #t
+            (begin
+              (display "\r\x1b[K\r") (display "--More--") (force-output)
+              (let ((k (key-reader)))
+                (cond ((eqv? k #\space) (lp i* per))   ; a screenful more
+                      ((eq? k 'enter)   (lp i* 1))     ; one line more
+                      ((eqv? k #\q)     #t)            ; stop
+                      (else (display "\a") (force-output) (lp i* 0))))))))))
+
+(define (list-matches names)
+  (page-rows (candidate-rows names (terminal-width))
+             (terminal-height)
+             (lambda () (read-key))))
+
+;;; The bell, or the listing -- measured: bash rings it on a Tab that could not
+;;; extend the word, and rings it again on the next Tab rather than listing when
+;;; there is nothing to list.  The listing itself is silent: the bell is rung
+;;; once, when the word first would not grow.
+(define (show-candidates names list?)
+  (cond
+    ((not (and list? (pair? names))) (display "\a"))
+    ((completion-query? (length names))
+     (leave-frame!)
+     (display "Display all ") (display (length names))
+     (display " possibilities? (y or n)")
+     (force-output)
+     (when (y-or-n-key?)
+       (display "\r\n")
+       (list-matches names)))
+    (else
+     (leave-frame!)                     ; out from under the line, as bash does
+     (list-matches names)))
+  (force-output))

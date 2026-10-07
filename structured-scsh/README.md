@@ -53,7 +53,9 @@ There are exactly two kinds of edit:
   editing, C-g aborts to the line as C-r found it, any other key accepts the
   match and runs — the matched line is the item's rendering, so it re-reads),
   C-c aborts the line,
-  C-d ends the shell on an empty line and deletes forward otherwise) — and
+  C-d ends the shell on an empty line and deletes forward otherwise, and **TAB
+  completes the word before the point the same way it does in the structure
+  editor**) — and
   back again.  The switch is persistent until ESC is pressed once more, and the
   half-typed line crosses over: a tree crosses as its rendering, text crosses
   back read as Scheme — an unclosed form is closed so the work survives the
@@ -83,23 +85,47 @@ There are exactly two kinds of edit:
   and `scsh> ` in text mode.  At the very start of the line the
   cursor stays before the old form; anywhere else it lands after it, ready for
   the next expression.  (`;` is a hotkey, so a literal semicolon cannot be
-  typed -- the same bargain as the structural parens.)  Tab moves the boundary
-  of the form you are in -- out or
+  typed -- the same bargain as the structural parens.)  **M-TAB** moves the
+  boundary of the form you are in -- out or
   back, keeping its direction until it runs out of room and then turning round,
   so pressing it repeatedly walks through every grouping of that form and comes
   back to the one it started in -- and the cursor does not move all the while,
   backspace at a
   word boundary joins with the previous word, delete removes an element, and SPC
-  splits a word in two ("ls-l" → "ls" "-l") or opens a new one at its end
+  splits a word in two ("ls-l" → "ls" "-l") or opens a new one at its end.
+
+  **TAB completes the word the cursor is in, as a file name** — in BOTH
+  editors, because it is the shell's policy rather than the editor's
+  (`structured-scsh/complete.scm`, which the loops take as a hook).  It is
+  bash's behaviour, measured against bash rather than invented: one Tab takes
+  the word as far as the names agree and rings the bell while there is still a
+  choice; a second Tab that could not extend the word prints the matches under
+  the line and draws the line again; a single match is completed outright, a
+  FILE taking a word separator after it so the next word can be typed at once
+  and a DIRECTORY a `/` instead; a `~` is kept exactly as typed (only the
+  directory read is expanded); a `.`-word sees the dot files, and bash's own
+  `./` and `../` with them; the matches are ordered by the LOCALE's COLLATION,
+  as bash orders them (case and punctuation only break ties — "documents/"
+  before "docu.txt"); the listing shows the LAST SEGMENT of each name and never
+  the path you are part way through; a listing of 100 or more matches is asked
+  about first -- "Display all N possibilities? (y or n)", readline's
+  `completion-query-items`; and a listing longer than the screen is PAGED the
+  way readline pages it: a screenful and then `--More--` on the last line,
+  SPACE for the next screenful, RET for one more line, `q` to stop.
 
 ## Files
 
 - `engine.scm` — nodes, symbols, locus, and the pure edit ops
   (`insert-char`, `delete-left`, `delete-right`, `insert-form`, `leave-form`,
-  `delete-node`, `transpose-node`, and the movements `move-left/right/home/end/up/down`)
+  `delete-node`, `transpose-node`, `word-at`, `replace-word`, and the movements
+  `move-left/right/home/end/up/down`)
 - `render.scm` — tree → text plus the cursor's column (the only place text is made)
 - `term.scm` — the raw terminal front-end: raw mode by FFI to libc termios, key
-  decoding (escape sequences), one-line redraw.  If stdin is not a terminal it
+  decoding (escape sequences, M-RET and M-TAB among them), one-line redraw, and
+  the completion listing under the line (readline's columns, the bell, the
+  "Display all N possibilities?" question, and the `--More--` pager).  Its
+  terminal size comes from one TIOCGWINSZ for both the columns and the rows.
+  If stdin is not a terminal it
   changes nothing, so the editor still runs over a pipe.
 - `repl.scm` — the structural REPL loop.  Dispatch is ONE ordered rule table:
   a rule is `(match handle)` — the matcher picks the keys the row is for, the
@@ -111,7 +137,18 @@ There are exactly two kinds of edit:
   `edit-line` all take it), so a program can supply its own; `(structured-scsh main)`
   composes the default.  `dispatch-key` is pure
   `(tree locus key) → (tree' locus' action)`; `run-loop` drives it with any key
-  source and display; `edit-line` is the same loop on a terminal.
+  source and display; `edit-line` is the same loop on a terminal.  **Tab is not
+  a row**: completing a word needs the filesystem and the memory of whether the
+  last Tab made progress, neither of which a pure rule can hold, so the loop
+  takes a `#:complete` hook instead (`(structured-scsh complete)`, the shell's
+  policy exactly as these rows are) and M-TAB owns the regroup.
+- `complete.scm` — Tab: completing the word at the cursor as a file name, and
+  the two-Tab rule for showing the matches.  The shell's policy, not the
+  editor's, so both editors take it as a hook.  It is bash's behaviour measured
+  against bash — the candidates, the order, the `~` that stays as typed, the last
+  segment a listing shows, and the `Display all N possibilities?` question at
+  100.  Where a rule was measured rather than read, the measurement is in the
+  comment.
 - `scsh.scm` — the scsh layer: what a shell line starts as (the first word opens
   `(run ())`), and what the shell operators do structurally — `|` makes a stage join a
   pipeline: the form you are in becomes the first stage of a fresh pipeline, but
@@ -173,7 +210,7 @@ the locus is in — exactly two characters, never the form's contents:
     (run (| (ls) (wc)))      the line's own, when the cursor is at the root
 
 The form is the one whose `(` the cursor is **on** — sitting just before a form
-is sitting on its `(`, and that form is then the target of bold *and* of Tab;
+is sitting on its `(`, and that form is then the target of bold *and* of M-Tab;
 anywhere else the target is the form containing the cursor (the one whose `(` is
 behind you).  So these two marks tell you where you are at every step.  Bold the
 whole form instead and every subform is bold too, which says nothing as the
@@ -210,9 +247,13 @@ line and anything below), and the cursor is walked back to its row and column.
 
     make -C test-suite engine
 
-Both suites are terminal-free: `editor-engine-test.scm` asserts on tree shapes;
+The suites are terminal-free: `editor-engine-test.scm` asserts on tree shapes;
 `editor-repl-test.scm` feeds scripted keystrokes through the real loop and checks
-every frame that was drawn.
+every frame that was drawn; `editor-textline-test.scm` does the same for the text
+line; and `editor-complete-test.scm` checks Tab's policy and the listing's
+arithmetic directly — the candidates, the layout, and the 100-match question —
+in a directory it makes for itself (the completion reads the filesystem, so a
+fixture directory is the only honest way to test it).
 
 ## The terminal
 

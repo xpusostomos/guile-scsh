@@ -7,7 +7,8 @@
 ;;;   make -C test-suite engine
 
 (use-modules (ice-9 receive) (ice-9 optargs) (srfi srfi-1))
-(use-modules (structured-scsh engine) (structured-scsh render) (structured-scsh repl) (structured-scsh scsh))
+(use-modules (structured-scsh engine) (structured-scsh render) (structured-scsh repl) (structured-scsh scsh)
+             (structured-scsh complete))
 
 (define failures '())
 (define (check label expect got)
@@ -29,12 +30,21 @@
 (define (inside-first)   (make-locus '(1) 0 0))        ; inside the empty command form
 
 ;;; (session KEYS TREE LOCUS) -> (values tree locus reason frames)
-(define* (session keys tree locus #:key (seed #f) (rules #f))
+;;; COMPLETE is the shell's Tab hook (see the completion checks below); what the
+;;; candidates hook was told is collected in *candidates* -- (NAMES LIST?) each
+;;; time it is called, oldest first.
+(define *candidates* '())
+
+(define* (session keys tree locus #:key (seed #f) (rules #f) (complete #f))
   (let ((drawn '()))
+    (set! *candidates* '())
     (receive (t l reason)
         (run-loop (lambda () (let ((k (car keys))) (set! keys (cdr keys)) k))
                   (lambda (text col row bold) (set! drawn (cons (list text col bold row) drawn)))
-                  tree locus #:seed seed #:rules rules)
+                  tree locus #:seed seed #:rules rules #:complete complete
+                  #:candidates (lambda (names list?)
+                                 (set! *candidates* (cons (list names list?) *candidates*))))
+      (set! *candidates* (reverse *candidates*))     ; oldest first
       (values t l reason (reverse drawn)))))
 
 ;;; ---- a whole line, keystroke by keystroke -----------------------------------
@@ -70,23 +80,99 @@
   (check "session: RIGHT steps out of the form, then a new symbol"
          "(run (l) X)" (render-tree t)))
 
-;;; ---- Tab regroups ------------------------------------------------------------
+;;; ---- M-Tab regroups ----------------------------------------------------------
+;;; Tab is the completion key now, so the regroup moved to M-Tab; the behaviour
+;;; is the same one, direction memory and all.
 
-(receive (t l reason frames) (session (list #\l 'tab 'enter) (start) (inside-first))
-  ;; ("run" ("l"))  -- Tab -->  ("run" () "l"): the same text otherwise, but a
+(receive (t l reason frames) (session (list #\l 'm-tab 'enter) (start) (inside-first))
+  ;; ("run" ("l"))  -- M-Tab -->  ("run" () "l"): the same text otherwise, but a
   ;; different grouping -- which is exactly why the tree, not the text, is truth
-  (check "session: Tab regroups" "(run () l)" (render-tree t)))
+  (check "session: M-Tab regroups" "(run () l)" (render-tree t)))
 
-;;; Tab keeps the cursor where it was, so pressing it again cycles the two
+;;; M-Tab keeps the cursor where it was, so pressing it again cycles the two
 ;;; groupings rather than wandering off into a different form
 (receive (t l reason frames)
-    (session (list #\l #\s 'tab 'enter) (start) (inside-first))
-  (check "session: Tab barfs the word out" "(run () ls)" (render-tree t))
+    (session (list #\l #\s 'm-tab 'enter) (start) (inside-first))
+  (check "session: M-Tab barfs the word out" "(run () ls)" (render-tree t))
   (check "session: leaving the cursor in the form it acted on" '((1) 0 0) l))
 
 (receive (t l reason frames)
-    (session (list #\l #\s 'tab 'tab 'enter) (start) (inside-first))
-  (check "session: and Tab again slurps it back" "(run (ls))" (render-tree t)))
+    (session (list #\l #\s 'm-tab 'm-tab 'enter) (start) (inside-first))
+  (check "session: and M-Tab again slurps it back" "(run (ls))" (render-tree t)))
+
+;;; ---- Tab completes a file name -----------------------------------------------
+;;; The completion reads the FILESYSTEM (structured-scsh/complete.scm), so these
+;;; run in a directory made for them.  What the loop does -- extend, bell, list
+;;; -- is bash's, measured; see complete.scm's header for the bash frames.
+
+(define complete-dir (string-append "/tmp/scsh-repl-complete-" (number->string (getpid))))
+
+(define (touch path)
+  (let ((p (open-file path "w"))) (close-port p)))
+
+(mkdir complete-dir #o755)
+(mkdir (string-append complete-dir "/documents") #o755)
+(mkdir (string-append complete-dir "/deep") #o755)
+(touch (string-append complete-dir "/data.txt"))
+(touch (string-append complete-dir "/docu.txt"))
+(touch (string-append complete-dir "/.hidden"))
+(chdir complete-dir)
+
+;; "doc" is shared by a file and a directory: Tab extends as far as they agree
+(receive (t l reason frames)
+    (session (list #\l #\s #\space #\d #\o #\c 'tab 'enter) (start) (inside-first)
+             #:complete tree-complete)
+  (check "session: Tab completes as far as possible" "(run (ls docu))" (render-tree t))
+  (check "session: a Tab that extended the word is silent" '() *candidates*))
+
+;; ...and the next Tab cannot extend it, so it rings the bell; the third lists
+(receive (t l reason frames)
+    (session (list #\l #\s #\space #\d #\o #\c 'tab 'tab 'enter) (start) (inside-first)
+             #:complete tree-complete)
+  (check "session: the next Tab rings the bell"
+         '((("documents/" "docu.txt") #f)) *candidates*))
+
+(receive (t l reason frames)
+    (session (list #\l #\s #\space #\d #\o #\c 'tab 'tab 'tab 'enter) (start) (inside-first)
+             #:complete tree-complete)
+  (check "session: the third Tab lists the matches"
+         '(#f #t) (map cadr *candidates*))
+  (check "session: and the line is where it was" "(run (ls docu))" (render-tree t)))
+
+;; one match: completed outright, and a FILE takes bash's word separator after it
+(receive (t l reason frames)
+    (session (list #\l #\s #\space #\d #\a #\t #\a 'tab 'enter) (start) (inside-first)
+             #:complete tree-complete)
+  (check "session: one match completes it" "(run (ls data.txt ))" (render-tree t))
+  (check "session: and the cursor is at the next word" '((1) 2 0) l))
+
+;; a DIRECTORY takes a "/" and no separator: you are going on inside it
+(receive (t l reason frames)
+    (session (list #\l #\s #\space #\d #\e #\e 'tab 'enter) (start) (inside-first)
+             #:complete tree-complete)
+  (check "session: a directory completes to a slash" "(run (ls deep/))" (render-tree t))
+  (check "session: with the cursor at its end" '((1) 1 5) l))
+
+;; nothing matches: the line is untouched and the bell rings
+(receive (t l reason frames)
+    (session (list #\l #\s #\space #\z #\z #\z 'tab 'enter) (start) (inside-first)
+             #:complete tree-complete)
+  (check "session: no match leaves the word alone" "(run (ls zzz))" (render-tree t))
+  (check "session: and rings the bell" '((() #f)) *candidates*))
+
+;; a dot word sees the dot files, and bash's own two entries with them
+(receive (t l reason frames)
+    (session (list #\l #\s #\space #\. 'tab 'tab 'enter) (start) (inside-first)
+             #:complete tree-complete)
+  (check "session: a dot word rings the bell, then lists" '(#f #t) (map cadr *candidates*))
+  (check "session: with bash's own two entries and the dot file"
+         '("./" "../" ".hidden") (car (car *candidates*))))
+
+;; the editor ignores Tab when no completion hook is given it (as it always did)
+(receive (t l reason frames)
+    (session (list #\l 'tab 'enter) (start) (inside-first))
+  (check "session: Tab with no hook is ignored" "(run (l))" (render-tree t))
+  (check "session: and says nothing" '() *candidates*))
 
 ;;; ---- forms: ( opens one, ) leaves it -----------------------------------------
 
@@ -227,7 +313,7 @@
 ;;; ---- the property that matters: every frame was a well-formed datum ----------
 
 (receive (t l reason frames)
-    (session (list #\l #\s #\( 'tab #\) 'right #\X 'enter) (start) (inside-first))
+    (session (list #\l #\s #\( 'm-tab #\) 'right #\X 'enter) (start) (inside-first))
   (check "every frame along the way parses"
          #t (every (lambda (f) (parses? (car f))) frames))
   (check "and so does the committed line" #t (parses? (render-tree t))))

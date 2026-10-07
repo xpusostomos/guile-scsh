@@ -70,9 +70,12 @@
          (lambda (t l k) (receive (t2 l2) (delete-right t l) (done t2 l2))))
    (make-rule (lambda (k) (eq? k 'm-return))
          (lambda (t l k) (receive (t2 l2) (insert-break t l) (done t2 l2))))
-   ;; Tab is intercepted by the loop, which remembers which way it is going;
-   ;; the row is here so a direct dispatch still does the plain regroup
-   (make-rule (lambda (k) (eq? k 'tab))
+   ;; M-TAB is intercepted by the loop, which remembers which way it is going;
+   ;; the row is here so a direct dispatch still does the plain regroup.  Tab
+   ;; itself completes now (the shell's hook, see RUN-LOOP) and so has no row:
+   ;; a completion needs the filesystem and the two-Tab state, neither of which
+   ;; a pure rule can hold.
+   (make-rule (lambda (k) (eq? k 'm-tab))
          (lambda (t l k) (receive (t2 l2) (transpose-node t l) (done t2 l2))))
    (make-rule (lambda (k) (eq? k #\()) (lambda (t l k) (receive (t2 l2) (insert-form t l) (done t2 l2))))
    (make-rule (lambda (k) (eq? k #\))) (lambda (t l k) (receive (t2 l2) (leave-form t l) (done t2 l2))))
@@ -176,37 +179,63 @@
 ;;; terminal draws and a test can simply read; a key source without a terminal
 ;;; is free to ignore it.
 ;;; SEED: (key) -> (values tree locus taken?), what the first keystroke opens
+;;;
+;;; COMPLETE: (tree locus) -> (values tree locus candidates) -- what Tab does.
+;;; The hook is the SHELL's (structured-scsh/complete.scm), because the editor
+;;; has no more idea of a file name than it has of "run"; a loop without one
+;;; simply ignores Tab.  #f for CANDIDATES means the word was completed; a LIST
+;;; -- empty when nothing matched -- means there was nothing to complete with,
+;;; which is the bell, and, on a second Tab, the listing:
+;;; CANDIDATES-HOOK: (names list?) -> unspecified, where LIST? says whether this
+;;; Tab could not extend the word either -- the second Tab in a row that made no
+;;; progress, which is bash's rule for showing the matches (complete.scm has the
+;;; measurements).
 (define* (run-loop key-reader draw initial-tree initial-locus
-                    #:key (seed #f) (rules #f) (search-draw #f))
-  (let loop ((tree initial-tree) (locus initial-locus) (direction 'slurp))
+                    #:key (seed #f) (rules #f) (search-draw #f)
+                    (complete #f) (candidates #f))
+  (let loop ((tree initial-tree) (locus initial-locus)
+             (direction 'slurp) (stalled? #f))
     (receive (text col row bold) (render tree locus)
       (draw text col row bold))
     (let ((key (key-reader)))
       (cond
-        ((eq? key 'tab)
-         ;; Tab moves the boundary of the form the cursor is in, and keeps
+        ((eq? key 'm-tab)
+         ;; M-TAB moves the boundary of the form the cursor is in, and keeps
          ;; going that way until it runs out of room, then turns round: pressing
          ;; it repeatedly walks through every grouping of that form.  Any other
-         ;; key forgets the direction, so the next Tab starts by opening it out.
+         ;; key forgets the direction, so the next M-TAB starts by opening it
+         ;; out.  (Tab used to do this; Tab completes now.)
          (receive (t l dir) (regroup tree locus direction)
-           (loop t l dir)))
+           (loop t l dir #f)))
+        ((eq? key 'tab)
+         ;; Tab completes the word the cursor is in, through the shell's hook.
+         ;; STALLED? is carried across the Tab the way the regroup direction is
+         ;; carried across an M-TAB: a Tab that extended the word starts the
+         ;; count over, and only a second Tab that could not starts the listing.
+         (if complete
+             (receive (t l names) (complete tree locus)
+               (if names
+                   (begin (when candidates (candidates names stalled?))
+                          (loop t l direction #t))
+                   (loop t l direction #f)))
+             (loop tree locus direction #f)))
         ((equal? key C-r)
          ;; the backward search, driven as its own loop; it returns the line
          ;; it ended on and an action for this loop to honour: 'continue,
          ;; 'evaluate, or ('key K) -- accept the match and run K as usual
          (receive (t l a) (search-mode key-reader search-draw
                                        (search-enter tree locus))
-           (cond ((eq? a 'continue) (loop t l 'slurp))
+           (cond ((eq? a 'continue) (loop t l 'slurp #f))
                  ((and (pair? a) (eq? (car a) 'key))
                   (receive (t2 l2 action) (step t l (cadr a) seed rules)
                     (if (eq? action 'continue)
-                        (loop t2 l2 'slurp)
+                        (loop t2 l2 'slurp #f)
                         (values t2 l2 action))))
                  (else (values t l a)))))
         (else
          (receive (t l action) (step tree locus key seed rules)
            (if (eq? action 'continue)
-               (loop t l 'slurp)
+               (loop t l 'slurp #f)
                (begin
                  (receive (text col row bold) (render t l)
                    (draw text col row bold))
@@ -254,13 +283,15 @@
 
 ;;; the same loop on a terminal
 (define* (edit-line initial-tree initial-locus
-                     #:key (prompt "scsh> ") (seed #f) (rules #f) (search-draw #f))
+                     #:key (prompt "scsh> ") (seed #f) (rules #f) (search-draw #f)
+                     (complete #f) (candidates #f))
   (with-raw-term
    (lambda ()
      (receive (tree locus action)
          (run-loop (lambda () (read-key))
                    (lambda (text col row bold) (draw prompt text col row bold))
                    initial-tree initial-locus #:seed seed #:rules rules
+                   #:complete complete #:candidates candidates
                    #:search-draw (lambda (query match failed)
                                    ;; only the MATCHED SPAN of the found line
                                    ;; renders in reverse video (bash highlights

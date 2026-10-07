@@ -425,6 +425,41 @@
   (check "and LEFT twice returns to the end of ls"
          '((1) 0 2) (move-left t (move-left t (make-locus '() 2 0)))))
 
+;;; ---- the word Tab completes ---------------------------------------------------
+;;; WORD-AT is the text IN FRONT OF the cursor -- the part of the word the user
+;;; has committed to, which is what readline completes -- and REPLACE-WORD writes
+;;; a longer one back, keeping whatever followed the cursor.  Two operations
+;;; rather than one because a completion that finds nothing must leave the tree
+;;; exactly as it was.
+
+(check "the word is what is in front of the cursor"
+       "l" (word-at (sexp->tree '(run (ls -l))) (make-locus '(1) 0 1)))
+(check "a whole word" "ls"
+       (word-at (sexp->tree '(run (ls -l))) (make-locus '(1) 0 2)))
+(check "at a word's first character there is nothing yet" ""
+       (word-at (sexp->tree '(run (ls -l))) (make-locus '(1) 0 0)))
+(check "on a form there is no word" ""
+       (word-at (sexp->tree '(run (ls))) (make-locus '() 1 0)))
+(check "and at a form's end slot there is none either" ""
+       (word-at (sexp->tree '(run (ls))) (make-locus '(1) 1 0)))
+
+(receive (t l) (replace-word (sexp->tree '(run (ls -l))) (make-locus '(1) 1 0) "X")
+  (check "writing a word keeps what followed the cursor" "(run (ls X-l))" (render-tree t))
+  (check "and leaves the cursor after what was written" '((1) 1 1) l))
+
+(receive (t l) (replace-word (sexp->tree '(run (ls))) (make-locus '(1) 1 0) "data.txt")
+  (check "writing into the empty slot opens a word there"
+         "(run (ls data.txt))" (render-tree t))
+  (check "with the cursor at its end" '((1) 1 8) l))
+
+(receive (t l) (replace-word (sexp->tree '(run (ls))) (make-locus '() 1 0) "X")
+  (check "writing where a form sits puts the word in front of it"
+         "(run X (ls))" (render-tree t)))
+
+(receive (t l) (replace-word (sexp->tree '(run (ls))) (make-locus '(1) 1 0) "")
+  (check "writing nothing into an empty slot changes nothing"
+         "(run (ls))" (render-tree t)))
+
 ;;; ---- verdict ----------------------------------------------------------------
 
 (newline)

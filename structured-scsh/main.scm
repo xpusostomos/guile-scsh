@@ -24,6 +24,7 @@
   #:use-module (ice-9 receive)
   #:use-module (structured-scsh engine)
   #:use-module (structured-scsh render)
+  #:use-module (structured-scsh complete)
   #:use-module (structured-scsh repl)
   #:use-module (structured-scsh scsh)
   #:use-module (structured-scsh job)
@@ -45,6 +46,12 @@
 ;;; from a form's end), then the editor's structural and control rows, then
 ;;; the printer, which always handles.  It is passed through the whole
 ;;; machinery, so a program using the editor can supply its own instead.
+;;;
+;;; Tab is not a row: completing a word needs the FILESYSTEM and the memory of
+;;; whether the previous Tab made progress, and a rule is a pure function of
+;;; (tree locus key).  It is the COMPLETE hook both editors take instead --
+;;; structured-scsh/complete.scm, which is the shell's policy exactly as these
+;;; rows are -- and M-TAB is the regroup key now that Tab completes.
 (define escape-rule
   (make-rule (lambda (k) (eq? k 'escape))
         (lambda (t l k) (values t l 'text #t))))
@@ -86,7 +93,8 @@
 ;;; is ignored with it off -- the line keeps being edited either way
 (define (edit-text text)
   (receive (text* action)
-      (text-line #:prompt (scsh-prompt #:text #t) #:initial text)
+      (text-line #:prompt (scsh-prompt #:text #t) #:initial text
+                 #:complete text-complete #:candidates show-candidates)
     (cond ((eq? action 'structured)
            (set! *text-editing?* #f)
            (let ((t (text-carry-tree text*)))
@@ -101,7 +109,8 @@
       (edit-text (render-tree tree))
       (receive (t l action)
           (edit-line tree locus #:prompt (scsh-prompt)
-                     #:seed seed #:rules key-table)
+                     #:seed seed #:rules key-table
+                     #:complete tree-complete #:candidates show-candidates)
         (cond ((eq? action 'text)
                (set! *text-editing?* #t)
                (edit-one t l))

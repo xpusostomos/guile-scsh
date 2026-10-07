@@ -29,6 +29,7 @@
             node? sym? element?
             container-at with-container splice list-replace remove-at list-head! tree-copy
             insert-char insert-char* delete-left
+            word-at replace-word
             insert-form leave-form delete-node transpose-node delete-right
             insert-break break? wrap-begin
             slurp-node barf-node can-slurp? can-barf? regroup target-form-path
@@ -242,6 +243,49 @@
           ;; the locus is the empty position at the end of this node
           (values (with-container tree path (append! cont (list c)))
                   (make-locus path i 1))))))
+
+;;; ---- the two primitives Tab completes through -------------------------------
+;;; Tab's edit is "replace the word you are in with a longer one", which is two
+;;; small operations: read the word, write it back.  Both go by the same rule as
+;;; readline's -- the word is the text UP TO THE CURSOR, not the whole leaf,
+;;; because that is the text the user has committed to so far.
+
+;;; The word at the locus: the symbol's characters up to the cursor.  Nowhere
+;;; else -- on a form, in the empty slot between words, at a word's first
+;;; character -- there is no word yet, and "" is what completing nothing starts
+;;; from.  Bash does the same for an empty word: it lists the whole directory,
+;;; and one entry in it completes.
+(define (word-at tree locus)
+  (let* ((path (locus-path locus))
+         (i    (locus-index locus))
+         (off  (locus-offset locus))
+         (cont (container-at tree path)))
+    (if (and (< i (length cont)) (sym? (list-ref cont i)))
+        (substring (list-ref cont i) 0 off)
+        "")))
+
+;;; Write TEXT into the word at the locus, leaving the cursor at the end of what
+;;; was written.  What followed the cursor in that word is KEPT -- readline
+;;; replaces the word up to the point, not the whole word -- though in the
+;;; ordinary case (the cursor at the end of what you typed) there is nothing
+;;; there and the word simply becomes TEXT.
+;;;
+;;; Nowhere to write: a word opens at the locus, exactly as typing its first
+;;; character would (beside the form, or in the empty slot the cursor sits in),
+;;; so completing an empty word lands where the user was about to type.
+(define (replace-word tree locus text)
+  (let* ((path (locus-path locus))
+         (i    (locus-index locus))
+         (off  (locus-offset locus))
+         (cont (container-at tree path)))
+    (if (and (< i (length cont)) (sym? (list-ref cont i)))
+        (let ((new (string-append text (substring (list-ref cont i) off))))
+          (values (with-container tree path (list-replace cont i new))
+                  (make-locus path i (string-length text))))
+        (if (string=? text "")
+            (values tree locus)
+            (values (with-container tree path (splice cont i text))
+                    (make-locus path i (string-length text)))))))
 
 ;;; Backspace: delete the character to the left; at the start of a symbol,
 ;;; join with the symbol to the left (the inverse of the future SPC split).
