@@ -77,6 +77,29 @@
    ;; a pure rule can hold.
    (make-rule (lambda (k) (eq? k 'm-tab))
          (lambda (t l k) (receive (t2 l2) (transpose-node t l) (done t2 l2))))
+
+   ;; The four slurp/barf chords -- paredit's C- and C-M- arrows, decoded in
+   ;; structured-scsh/term.scm.  WHICH WAY each moves the delimiter is documented at
+   ;; the ops in engine.scm: C-right and C-left move the form's ")", C-M-left
+   ;; and C-M-right its "(".  The can-* guard is what keeps an inapplicable
+   ;; chord from being an error: at the root there is no sibling to take in and
+   ;; no parent to give a child to, so the line stays whole and nothing moves.
+   (make-rule (lambda (k) (eq? k 'c-right))
+         (lambda (t l k) (if (can-slurp? t l)
+                             (receive (t2 l2) (slurp-node t l) (done t2 l2))
+                             (done t l))))
+   (make-rule (lambda (k) (eq? k 'c-left))
+         (lambda (t l k) (if (can-barf? t l)
+                             (receive (t2 l2) (barf-node t l) (done t2 l2))
+                             (done t l))))
+   (make-rule (lambda (k) (eq? k 'c-m-left))
+         (lambda (t l k) (if (can-slurp-back? t l)
+                             (receive (t2 l2) (slurp-node-back t l) (done t2 l2))
+                             (done t l))))
+   (make-rule (lambda (k) (eq? k 'c-m-right))
+         (lambda (t l k) (if (can-barf-back? t l)
+                             (receive (t2 l2) (barf-node-back t l) (done t2 l2))
+                             (done t l))))
    (make-rule (lambda (k) (eq? k #\()) (lambda (t l k) (receive (t2 l2) (insert-form t l) (done t2 l2))))
    (make-rule (lambda (k) (eq? k #\))) (lambda (t l k) (receive (t2 l2) (leave-form t l) (done t2 l2))))
    (make-rule (lambda (k) (eq? k #\;)) (lambda (t l k) (receive (t2 l2) (wrap-begin t l)  (done t2 l2))))
@@ -93,14 +116,22 @@
 ;;; Walk the table; the first row that matches AND handles wins.  Declining)
 ;;; rows cost nothing but a skip.
 (define* (dispatch-key tree locus key #:key (rules #f))
-  (let lp ((rs (or rules core-rules)))
-    (if (null? rs)
-        (done tree locus)                       ; nothing handled: ignore
-        (if ((rule-match (car rs)) key)
-            (call-with-values (lambda () ((rule-handle (car rs)) tree locus key))
-              (lambda (t l a handled?)
-                (if handled? (values t l a) (lp (cdr rs)))))
-            (lp (cdr rs))))))
+  ;; The one position outside the line -- its own "(" -- is for standing on and
+  ;; stepping off.  Typing, deleting, ; and Tab there all mean the start of the
+  ;; line, so they are handed the first element's position instead; only the two
+  ;; movements are allowed to see it, or the caret could never leave it.
+  (let ((locus (if (and (negative? (locus-index locus))
+                        (not (memq key '(left right))))
+                   (make-locus (locus-path locus) 0 (locus-offset locus))
+                   locus)))
+    (let lp ((rs (or rules core-rules)))
+      (if (null? rs)
+          (done tree locus)                         ; nothing handled: ignore
+          (if ((rule-match (car rs)) key)
+              (call-with-values (lambda () ((rule-handle (car rs)) tree locus key))
+                (lambda (t l a handled?)
+                  (if handled? (values t l a) (lp (cdr rs)))))
+              (lp (cdr rs)))))))
 
 ;;; ---- C-r: the backward search ------------------------------------------------
 ;;; The state is (QUERY POS FAILED MATCH-TREE SAVED-TREE SAVED-LOCUS): POS is
@@ -163,7 +194,12 @@
          ;; the cursor and the keystroke is typed into it (or taken outright)
          (receive (t l taken?) (seed key)
            (if (null? t)
-               (values tree locus 'continue)  ; opened nothing: swallow
+               ;; opened nothing: nothing is opened, so the keystroke is typed
+               ;; where it stands -- a ")" is TAKEN rather than untaken, and is
+               ;; swallowed here as it always was
+               (if taken?
+                   (values tree locus 'continue)
+                   (dispatch-key tree locus key #:rules rules))
                (let* ((i  (locus-index locus))
                       (t* (splice tree i t))
                       (l* (make-locus (append (list i) (locus-path l))

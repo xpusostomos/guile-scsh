@@ -66,6 +66,13 @@
 ;;;   ")"                        -- nothing at all (swallowed)
 ;;;   ","                        -- plain Scheme again, and the comma is typed:
 ;;;                                 the line is a Scheme expression, not a command
+;;;   "'" and "`"                -- a Scheme line too, and TYPED: a quote is not
+;;;                                 a command, so 'a must not open (run ()) and
+;;;                                 run the "command" |'a|.  It is the one
+;;;                                 element that stands at the LINE's own level,
+;;;                                 outside any form -- which is only fair, since
+;;;                                 a quote is an abbreviation for (quote ...)
+;;;                                 and so is a form all the same.
 ;;; so a line can be Scheme rather than a command whenever you start one.
 (define (seed key)
   (cond ((char=? key #\() (values (list "") '(() 0 0) #t))
@@ -74,6 +81,7 @@
         ;; string, and the shell operators keep their hands off it
         ((char=? key #\!) (values (list "!" "") '(() 1 0) #t))
         ((char=? key #\,) (values '() '(() 0 0) #f))
+        ((or (char=? key #\') (char=? key #\`)) (values '() '(() 0 0) #f))
         (else               (values (sexp->tree '(run ())) '((1) 0 0) #f))))
 
 ;;; ---- "," -- naming a value, not running a command ---------------------------
@@ -88,9 +96,15 @@
 ;;; could not have meant unquote anyway -- Scheme rejects it outright.  Inside a
 ;;; form the comma is still unquote, as it must be: `(1 ,x) is a quasiquote.
 (define (line-datum sexp)
-  (if (and (pair? sexp) (null? (cdr sexp))
-           (pair? (car sexp)) (eq? 'unquote (car (car sexp))))
-      (cadr (car sexp))
+  (if (and (pair? sexp) (null? (cdr sexp)) (pair? (car sexp)))
+      (let ((head (car (car sexp))))
+        (cond ((eq? 'unquote head)    (cadr (car sexp)))   ; ,x -- the VALUE x
+              ;; 'x and `x are forms already, and a line holding one is just
+              ;; that form: without this the line is ((quote x)), which Scheme
+              ;; reads as "call the result of (quote x)"
+              ((eq? 'quote head)      (car sexp))
+              ((eq? 'quasiquote head) (car sexp))
+              (else sexp)))
       sexp))
 
 ;;; ---- the shell operators ---------------------------------------------------

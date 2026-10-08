@@ -33,6 +33,7 @@
             insert-form leave-form delete-node transpose-node delete-right
             insert-break break? wrap-begin
             slurp-node barf-node can-slurp? can-barf? regroup target-form-path
+            slurp-node-back barf-node-back can-slurp-back? can-barf-back?
             move-left move-right move-home move-end move-up move-down
             focus-child focus-after
             sexp->tree tree->sexp))
@@ -377,37 +378,88 @@
 ;;; "(" -- open a new form at the locus and step inside it.  Inside a word the
 ;;; word is split at the cursor first, so the form lands exactly where the
 ;;; cursor is: typing  ' (  must not push the quote past the new form.
+;;;
+;;; ON a "(" the new form WRAPS the one already there.  Insertion puts the new
+;;; thing to the LEFT of the cursor; when what is to the left is a form's "("
+;;; that the cursor is already standing on, its ")" has only one logical home --
+;;; after that form:
+;;;
+;;;     (run (ls))     cursor on the "(" of (ls)   --(-->   (run ((ls)))
+;;;
+;;; and the same holds at the line's own "(", which wraps the whole line.  What
+;;; the user is usually about to type is what should SURROUND the form -- a
+;;; begin, a let -- and until they do, the wrapper is a bare pair and the cursor
+;;; waits just inside it, where that word will go.  ((run (ls))) evaluates to
+;;; nothing useful; it is not meant to yet.
+;;;
+;;; Everywhere else -- inside a word, on an element that is not a form, in an
+;;; empty slot -- the form lands where the cursor is, exactly as before.
 (define (insert-form tree locus)
   (let* ((path (locus-path locus))
          (i    (locus-index locus))
          (off  (locus-offset locus))
          (cont (container-at tree path)))
-    (if (and (< i (length cont)) (sym? (list-ref cont i)) (> off 0))
-        (let* ((el (list-ref cont i))
-               (left  (substring el 0 off))
-               (right (substring el off))
-               ;; the word to the left stays, the new form follows, and the
-               ;; word's remainder (if any) follows that
-               (inserted (if (string=? right "") (list left '()) (list left '() right))))
-          (let ((tail (list-tail cont (+ i 1))))
-            (values (with-container tree path
-                                    (append! (list-head! cont i) inserted tail))
-                    (make-locus (append path (list (+ i 1))) 0 0))))
-        (if (and (< i (length cont)) (sym? (list-ref cont i))
-                 (string=? (list-ref cont i) ""))
-            ;; an empty word is only where the cursor was sitting: the new form
-            ;; takes its place (otherwise "& ( wc )" leaves a stray gap)
-            (values (with-container tree path (list-replace cont i '()))
-                    (make-locus (append path (list i)) 0 0))
-            (values (with-container tree path (splice cont i '()))
-                    (make-locus (append path (list i)) 0 0))))))
+    (cond
+      ;; the line's own "(": the form the cursor is on is the whole line
+      ((and (null? path) (zero? i) (zero? off))
+       (values (list tree) (make-locus '() 0 0)))
+      ;; on a form's "(": that form is wrapped
+      ((and (< i (length cont)) (node? (list-ref cont i)))
+       (let ((el (list-ref cont i)))
+         (values (with-container tree path (list-replace cont i (list el)))
+                 (make-locus (append path (list i)) 0 0))))
+      ;; inside a word: split it, the form between the halves
+      ((and (< i (length cont)) (sym? (list-ref cont i)) (> off 0))
+       (let* ((el (list-ref cont i))
+              (left  (substring el 0 off))
+              (right (substring el off))
+              ;; the word to the left stays, the new form follows, and the
+              ;; word's remainder (if any) follows that
+              (inserted (if (string=? right "") (list left '()) (list left '() right))))
+         (let ((tail (list-tail cont (+ i 1))))
+           (values (with-container tree path
+                                   (append! (list-head! cont i) inserted tail))
+                   (make-locus (append path (list (+ i 1))) 0 0)))))
+      ;; an empty word is only where the cursor was sitting: the new form takes
+      ;; its place (otherwise "& ( wc )" leaves a stray gap)
+      ((and (< i (length cont)) (sym? (list-ref cont i))
+            (string=? (list-ref cont i) ""))
+       (values (with-container tree path (list-replace cont i '()))
+               (make-locus (append path (list i)) 0 0)))
+      (else
+       (values (with-container tree path (splice cont i '()))
+               (make-locus (append path (list i)) 0 0))))))
 
-;;; ")" -- leave the current form; the locus comes to rest after it
+;;; ")" -- leave the current form; the locus comes to rest after it.
+;;;
+;;; At the LINE's own level there is no form to leave, and the key means the
+;;; general rule instead: JUST AFTER a form's ")" it wraps that form --
+;;;
+;;;     (a (b) c)   cursor after (b)'s ")"   --)--->   (a ((b)) c)
+;;;
+;;; The cursor stays just after the ")" it made, so pressing the key again
+;;; wraps again.  The LINE's own ")" is not one of these: a ")" that merely
+;;; closes a form you have finished typing must not wrap it, or "type a
+;;; balanced form" would grow a pair every time -- so the end of the line keeps
+;;; doing nothing, as it always did.
 (define (leave-form tree locus)
-  (let ((path (locus-path locus)))
-    (if (null? path)
-        (values tree locus)
-        (values tree (make-locus (butlast path) (+ (last path) 1) 0)))))
+  (let ((path (locus-path locus))
+        (i    (locus-index locus)))
+    (cond
+      ((not (null? path))
+       (values tree (make-locus (butlast path) (+ (last path) 1) 0)))
+      ;; ... and not at the END of the line either: that is where the ")"
+      ;; closing a form you just typed leaves you, and wrapping there would
+      ;; grow a pair on every balanced line
+      ;; past the LINE's own ")" -- where the whole line is the form before it
+      ((and (null? path) (= i (length tree)) (> (locus-offset locus) 0) (pair? tree))
+       (values (list tree) (make-locus '() 0 0)))
+      ((and (< i (length tree)) (> i 0) (zero? (locus-offset locus))
+            (node? (list-ref tree (- i 1))))
+       (let ((k (- i 1)))
+         (values (with-container tree '() (list-replace tree k (list (list-ref tree k))))
+                 (make-locus '() (+ k 1) 0))))
+      (else (values tree locus)))))
 
 ;;; delete the element at the locus, whole
 (define (delete-node tree locus)
@@ -460,7 +512,10 @@
        (let* ((path (locus-path locus))
               (i    (locus-index locus))
               (cont (container-at tree path)))
-         (if (and (< i (length cont)) (node? (list-ref cont i)))
+         ;; index -1 is the line's own "(", which is outside every form: the
+         ;; target there is the line itself, as at any other position with
+         ;; nothing in front of the cursor
+         (if (and (>= i 0) (< i (length cont)) (node? (list-ref cont i)))
              (append path (list i))
              path))))
 
@@ -510,6 +565,68 @@
     (and fpath (not (null? fpath))
          (pair? (list-ref (container-at tree (butlast fpath)) (last fpath))))))
 
+;;; The two BACKWARD moves: the mirror of the pair above, taking from the LEFT.
+;;; SLURP-NODE-BACK takes the PREVIOUS sibling into the form, so the form's "("
+;;; moves left; BARF-NODE-BACK sends its FIRST child out to stand before it, so
+;;; the "(" moves right.  The forward pair move the ")" and the form keeps its
+;;; slot in the parent; these move the "(" and the form itself takes over the
+;;; slot the previous sibling had -- which is why the cursor cannot be left
+;;; where it is.  See KEPT-LOCUS-BACK.
+;;;
+;;; As with the forward pair, the elements moved keep their own conses; only the
+;;; form's HEAD changes, since an insertion at index 0 needs a fresh cons and
+;;; losing the first child drops one.
+(define (slurp-node-back tree locus)
+  (let* ((fpath  (slurp-back-path tree locus))
+         (ppath  (butlast fpath))
+         (ci     (last fpath))
+         (parent (container-at tree ppath))
+         (me     (list-ref parent ci))
+         (prev   (list-ref parent (- ci 1)))
+         (me*    (cons prev me))                     ; the previous sibling leads
+         (parent* (list-replace (remove-at parent (- ci 1)) (- ci 1) me*)))
+    (values (with-container tree ppath parent*)
+            (kept-locus-slurp-back fpath locus))))
+
+(define (barf-node-back tree locus)
+  (let* ((fpath  (target-form-path tree locus))
+         (ppath  (butlast fpath))
+         (ci     (last fpath))
+         (parent (container-at tree ppath))
+         (me     (list-ref parent ci))
+         (child  (car me))                           ; the first child leaves
+         (me*    (cdr me))
+         ;; it stands BEFORE the form, so the form follows one slot along
+         (parent* (list-replace (splice parent ci child) (+ ci 1) me*)))
+    (values (with-container tree ppath parent*)
+            (kept-locus-barf-back fpath locus))))
+
+;;; Which form a backward slurp takes from, walking OUTWARD: the form the cursor
+;;; is in, or, when that one has nothing on its left, the first form enclosing it
+;;; that does.  Slurping left is "grow the form around the cursor", and the
+;;; cursor does not care which level that happens at -- stopping dead the moment
+;;; the form it is in reaches the front of its parent would leave the chain
+;;; stuck at (a b) in (c ((a b) c)), when the next step is plainly to take the
+;;; c into ((a b) c).  Returns #f when nothing encloses a form with a sibling:
+;;; the line, where the "(" can go no further left.
+(define (slurp-back-path tree locus)
+  (let lp ((fpath (target-form-path tree locus)))
+    (cond ((or (not fpath) (null? fpath)) #f)   ; the root: no sibling, no parent
+          ((> (last fpath) 0) fpath)            ; a sibling on its left: take it
+          (else (lp (butlast fpath))))))        ; walk out and try again
+
+;;; Can the form do it?  As with the forward pair, nothing at the root: the line
+;;; has no previous sibling to take in and no parent to give a child to.  Slurp
+;;; needs a sibling on its left; barf needs a child to give up.
+(define (can-slurp-back? tree locus)
+  (and (slurp-back-path tree locus) #t))
+
+(define (can-barf-back? tree locus)
+  (let ((fpath (target-form-path tree locus)))
+    (and fpath (not (null? fpath))
+         (pair? (list-ref (container-at tree (butlast fpath)) (last fpath))))))
+
+
 ;;; TAB MOVES THE BOUNDARY OF THE FORM THE CURSOR IS IN, one way or the other,
 ;;; and keeps going that way until it runs out of room -- then it turns round.
 ;;; Pressing it repeatedly therefore walks through every grouping of that form
@@ -538,6 +655,108 @@
   (if (equal? (locus-path locus) fpath)
       (regroup-locus fpath old-n new-n locus)
       locus))
+
+;;; Where the cursor belongs after a BACKWARD move.
+;;;
+;;; The forward pair can leave the locus alone: everything they do is to the
+;;; RIGHT of it, and the form keeps its slot in the parent.  These two move the
+;;; form's "(" -- and with it the form's own slot, since the form takes over the
+;;; slot the previous sibling had (slurp) or steps aside for the child it gives
+;;; up (barf).  So the cursor must be carried, and the two are NOT one rule:
+;;; they move the form opposite ways, by one slot in each direction.
+;;;
+;;; The principle in both is the one you type by: the cursor keeps its place on
+;;; the line and the delimiter moves past it.  Read off the two examples --
+;;;
+;;;   (a (b) c)  C-M-Left   ->  ((a b) c)      "(" moves left
+;;;   ((a b) c)  C-M-Right  ->  (a (b) c)      "(" moves right
+;;;
+;;; -- the contents never move under the cursor.
+
+;;; After SLURP-NODE-BACK: the form takes the previous sibling's slot (ci-1) and
+;;; grows a first child, so everything inside it shifts one slot LATER.
+;;;
+;;;   on the form's "("    -> just inside it, after the element taken in
+;;;   inside the form      -> the same character, one slot later
+;;;   a later sibling      -> the same character, one slot earlier
+;;;   anything before that -> unmoved
+(define (kept-locus-slurp-back fpath locus)
+  (let* ((ppath  (butlast fpath))
+         (ci     (last fpath))
+         (fpath* (append ppath (list (- ci 1))))     ; where the form lands
+         (path   (locus-path locus))
+         (i      (locus-index locus)))
+    (cond
+      ((and (equal? path ppath) (= i ci))            ; ON the form's "("
+       (make-locus fpath* 1 0))
+      ((path-prefix? fpath path)                     ; inside the form
+       ;; the index shifts only when the cursor's container IS the form: the
+       ;; element taken in lands in front of the cursor there.  When the form
+       ;; is merely an ANCESTOR -- slurping left walked out to it -- the cursor
+       ;; is inside some child of it, and its place in that child is unmoved.
+       (make-locus (path-through fpath* path (length fpath))
+                   (if (= (length path) (length fpath)) (+ i 1) i)
+                   (locus-offset locus)))
+      ((path-prefix? ppath path)                     ; elsewhere under the parent
+       (let ((k (path-slot path ppath i)))
+         (if (> k ci) (path-slot-shift path ppath k -1 locus) locus)))
+      (else locus))))
+
+;;; After BARF-NODE-BACK: the form's first child leaves it for the slot the form
+;;; itself had (ci), and the form steps one slot along (ci+1), so what is left
+;;; inside it shifts one slot EARLIER.
+;;;
+;;;   on the form's "("     -> unmoved: the child comes to rest under the cursor
+;;;   on the child given up -> the same character, now standing before the form
+;;;   further inside        -> the same character, one slot earlier
+;;;   a later sibling       -> the same character, one slot later
+;;;   anything before that  -> unmoved
+(define (kept-locus-barf-back fpath locus)
+  (let* ((ppath  (butlast fpath))
+         (ci     (last fpath))
+         (fpath* (append ppath (list (+ ci 1))))     ; where the form lands
+         (path   (locus-path locus))
+         (i      (locus-index locus))
+         (off    (locus-offset locus)))
+    (cond
+      ((and (equal? path ppath) (= i ci)) locus)     ; ON the form's "("
+      ((path-prefix? fpath path)
+       (let ((rest (list-tail path (length fpath))))
+         (cond
+           ((null? rest)                             ; in the form's own slot
+            (make-locus fpath* (max 0 (- i 1)) off))
+           ((zero? (car rest))                       ; on the child given up
+            (make-locus (append ppath (list ci) (cdr rest)) i off))
+           (else
+            (make-locus (append fpath* (cons (- (car rest) 1) (cdr rest))) i off)))))
+      ((path-prefix? ppath path)
+       (let ((k (path-slot path ppath i)))
+         (if (> k ci) (path-slot-shift path ppath k 1 locus) locus)))
+      (else locus))))
+
+;;; Is P a prefix of L?  (() is a prefix of anything.)
+(define (path-prefix? p l)
+  (or (null? p)
+      (and (pair? l) (= (car p) (car l)) (path-prefix? (cdr p) (cdr l)))))
+
+;;; Which slot of PPATH the locus sits in: its INDEX when its container IS the
+;;; parent, and otherwise the path element just below the parent.
+(define (path-slot path ppath i)
+  (if (= (length path) (length ppath))
+      i
+      (list-ref path (length ppath))))
+
+;;; The locus L, sitting in slot K of PPATH, with that slot moved by DELTA.
+(define (path-slot-shift path ppath k delta locus)
+  (if (= (length path) (length ppath))
+      (make-locus ppath (+ (locus-index locus) delta) (locus-offset locus))
+      (make-locus (list-replace (list-copy path) (length ppath) (+ k delta))
+                  (locus-index locus) (locus-offset locus))))
+
+(define (path-through newf path drop)
+  (let ((rest (list-tail path drop)))
+    (append newf (if (null? rest) '() (cons (+ (car rest) 1) (cdr rest))))))
+
 
 ;;; the plain either-way move, for callers that do not need to cycle
 (define (transpose-node tree locus)
@@ -571,7 +790,10 @@
 ;;; Moving left steps onto the character before the cursor; when there is none
 ;;; -- at the start of a word or a form -- it steps into whatever is to the
 ;;; left: the end of the word there, or the END of the form there, which is the
-;;; only place leftwards of the form's ")" can mean.  (Stepping to the form's
+;;; only place leftwards of the form's ")" can mean.  An EMPTY form is stepped
+;;; into the same way, landing between its parens -- which is where the cursor
+;;; has to go to reach it at all, since a form's "(" is only reachable from
+;;; inside or from the left.  (Stepping to the form's
 ;;; start would jump the cursor over the whole form, which is what it looked
 ;;; like it was doing.)  Left and right are then exact opposites: entering a
 ;;; form goes in at its start going right, and at its end going left.
@@ -579,10 +801,17 @@
   (let ((path (locus-path locus)) (i (locus-index locus)) (off (locus-offset locus)))
     (let ((cont (container-at tree path)))
       (cond
+        ;; past the LINE's ")" is not "one character back": what is inside the
+        ;; line's end is the same caret as the last element's end, so step to
+        ;; that element rather than stopping twice in one place
+        ((and (null? path) (= i (length cont)) (> off 0))
+         (move-left tree (make-locus path i 0)))
         ((> off 0) (make-locus path i (- off 1)))
+        ;; the line's own "(" -- index -1 -- is as far left as it goes
+        ((and (null? path) (= i -1)) locus)
         ((= i 0)
          (if (null? path)
-             locus
+             (make-locus path -1 0)
              (make-locus (butlast path) (last path) 0)))
         (else
          (let ((prev (list-ref cont (- i 1))))
@@ -603,7 +832,6 @@
                        locus
                        (make-locus (butlast path) (last path) 0))))))
              ((sym? prev) (make-locus path (- i 1) (string-length prev)))
-             ((null? prev) (make-locus path (- i 1) 0))
              (else (make-locus (append path (list (- i 1))) (length prev) 0)))))))))
 
 
@@ -611,7 +839,9 @@
   (let* ((path (locus-path locus)) (i (locus-index locus)) (off (locus-offset locus))
          (cont (container-at tree path))
          (n (length cont)))
-    (cond ((and (< i n) (sym? (list-ref cont i))
+    (cond ;; off the line's "(" and back to its first element
+          ((and (null? path) (= i -1)) (make-locus path 0 0))
+          ((and (< i n) (sym? (list-ref cont i))
                 (< off (string-length (list-ref cont i))))
            (make-locus path i (+ off 1)))
           ;; a form is entered at its start going right -- an empty one too,
@@ -630,6 +860,10 @@
            (let lp ((j (+ i 1)))
              (if (and (< j n) (break? (list-ref cont j))) (lp (+ j 1))
                  (make-locus path j 0))))
+          ;; the end of a form -- and of the line -- holds two places: inside
+          ;; its ")" (where closing the form leaves you) and, one step on,
+          ;; outside it, which is the gap the caret comes from
+          ((and (null? path) (= i n) (zero? off)) (make-locus path n 1))
           ;; past the last character of the last element, the only place to go
           ;; is the slot before the ")" -- from where RIGHT leaves the form
           ((= i (- n 1)) (make-locus path n 0))
@@ -716,6 +950,16 @@
            (cons 'unquote-splicing (substring s 2)))
           ((and (> n 1) (char=? #\, (string-ref s 0)))
            (cons 'unquote (substring s 1)))
+          ;; the SAME bargain for the quote and quasiquote, which were missed:
+          ;; typing 'a leaves ONE word just as ,x does, and it has to read as
+          ;; (quote a).  It did not: the word fell through to the plain reader,
+          ;; which read (quote a) correctly and then discarded it, because only
+          ;; numbers, strings and booleans are kept -- leaving the SYMBOL |'a|,
+          ;; which evaluates to "Unbound variable: |'a|".
+          ((and (> n 1) (char=? #\' (string-ref s 0)))
+           (cons 'quote (substring s 1)))
+          ((and (> n 1) (char=? #\` (string-ref s 0)))
+           (cons 'quasiquote (substring s 1)))
           (else #f))))
 
 (define (leaf->datum s)
@@ -725,14 +969,19 @@
         (leaf-plain-datum s))))
 
 (define (leaf-plain-datum s)
-  (let ((d (catch #t
-                  (lambda ()
-                    (let ((p (open-input-string s)))
-                      (let ((x (read p)))
-                        (and (eof-object? (peek-char p)) x))))
-                  (lambda args #f))))
-    (cond ((or (number? d) (string? d) (boolean? d)) d)
-          (else (string->symbol s)))))
+  ;; FAILED reads must not be confused with what they read: this used to return
+  ;; #f for a word the reader choked on, and #f IS a boolean -- so a word like a
+  ;; lone quote came through as the literal #f, and the line went to pieces
+  ;; somewhere else entirely ("Can only stringify strings, symbols, and
+  ;; integers. (#f)").  A word that does not read as one datum is just a word.
+  (catch #t
+    (lambda ()
+      (let* ((p (open-input-string s))
+             (x (read p)))
+        (if (eof-object? (peek-char p))            ; the whole word, one datum
+            (if (or (number? x) (string? x) (boolean? x)) x (string->symbol s))
+            (string->symbol s))))                  ; trailing junk: a plain word
+    (lambda args (string->symbol s))))             ; unreadable: a plain word
 
 (define (element->sexp e)
   (cond ((string? e) (leaf->datum e))

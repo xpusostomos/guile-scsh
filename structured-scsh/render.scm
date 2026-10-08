@@ -34,11 +34,15 @@
 ;; A word may carry its prefix -- ",x" is written in one go -- and such a word
 ;; standing at the head of a line is not a form: the line names a value, so it
 ;; is drawn bare, ",x" rather than "(,x)".  A line headed by ! is the same
-;; bargain in reverse: it names a shell command, so it is drawn bare too.
+;; bargain in reverse: it names a shell command, so it is drawn bare too.  And
+;; so is a quote: "'a" is (quote a) -- a form, but a line holding only it is
+;; that form, and "(('a))" is not what anyone typed.
 (define (prefixed-word? e)
   (and (string? e) (> (string-length e) 0)
        (or (char=? #\, (string-ref e 0))
-           (char=? #\! (string-ref e 0)))))
+           (char=? #\! (string-ref e 0))
+           (char=? #\' (string-ref e 0))
+           (char=? #\` (string-ref e 0)))))
 
 ;; the form's first word, if any -- its name decides the indentation rule
 (define (first-word node)
@@ -60,31 +64,50 @@
   (define (here? path i)
     (and locus (equal? path (locus-path locus)) (= i (locus-index locus))))
   (let walk ((node tree) (path '()))
-    ;; the root's index-0 slot renders ON the line's "(": there is no locus
-    ;; outside the line, so that one position is "on the (" as well as "before
-    ;; the first element" -- the same edit either way.  A just-opened EMPTY
-    ;; form is the exception: between its parens is the whole point.
-    (define (edge-cursor?)
-      (and locus (null? path) (pair? node)
-           (zero? (locus-index locus)) (zero? (locus-offset locus))
-           (not (equal? (car node) ""))))
-    (define (skip-root-cursor? i)
-      (and (zero? i) (edge-cursor?)))
-    ;; a form whose first word carries a marker prefix is the marker
-    ;; expression itself -- the comma value line, a nested ,@ splice -- and
-    ;; is drawn bare: its datum is what the marker fuses to
+    ;; THE CURSOR SITS BETWEEN THINGS, the way a text caret does.  A locus at
+    ;; an element's start draws in the GAP before it -- before the space, that
+    ;; is, right after whatever precedes it -- and not on the element's first
+    ;; character.  That is what makes "just after a form's )" a place you can
+    ;; stand in: without it, stepping left off the element after a form jumped
+    ;; INSIDE the form, to its ")", instead of stopping in the gap.
+    ;;
+    ;; The line's own parens are reached the same way: the position past the
+    ;; line's ")" is the one place OUTSIDE the line, and the line's first
+    ;; element is now its own position (it used to be drawn on the "(", which
+    ;; meant nothing could ever stand on the first atom).
     (let* ((bare? (and (pair? node) (prefixed-word? (car node))))
            (head (first-word node))
-           (n (length node)))
+           (n (length node))
+           (root? (null? path)))
       (let lp ((i 0) (words 0)
                (acc (cond (bare? '())
-                          ((edge-cursor?) (list (list 'open path) '(cursor)))   ; acc is reverse-final
+                          ;; index -1 is the LINE's own "(", the one place
+                          ;; outside the line at its start: the root's indices
+                          ;; are the elements', so the "(" needs one of its own
+                          ((and root? locus (= (locus-index locus) -1)
+                                (zero? (locus-offset locus)))
+                           (list (list 'open path) '(cursor)))   ; acc is reverse-final
                           (else (list (list 'open path))))))
         (if (= i n)
             (append (reverse acc)
-                    ;; the end position of this node, just before its ")"
-                    (if (here? path n) '((cursor)) '())
-                    (if bare? '() (list (list 'close path))))
+                    (cond
+                      (bare? (if (here? path n) (list '(cursor)) '()))
+                      ;; After a form you have just closed the caret belongs
+                      ;; INSIDE the line, before its ")", ready to type the next
+                      ;; element -- so that is where the end position draws.  The
+                      ;; place PAST the line's ")" is a second position at the
+                      ;; same index, told apart by its offset, and it is one you
+                      ;; step to deliberately rather than land on.
+                      ((and root? (here? path n) (> (locus-offset locus) 0))
+                       (append (list (list 'close path)) (list '(cursor))))
+                      ;; a form's end holds two places too: inside its ")"
+                      ;; (offset 0, where closing it leaves you) and outside it
+                      ;; (offset 1, the gap the caret steps into from the right)
+                      (else (let ((at-end (here? path n))
+                                  (outside (and locus (> (locus-offset locus) 0))))
+                              (append (if (and at-end (not outside)) (list '(cursor)) '())
+                                      (list (list 'close path))
+                                      (if (and at-end outside) (list '(cursor)) '()))))))
             (let* ((el (list-ref node i))
                    (prev (if (zero? i) #f (list-ref node (- i 1))))
                    (sp (if (and (> i 0)
@@ -92,22 +115,27 @@
                                 (not (break? prev))
                                 (not (prefix-element? prev)))
                            '((space)) '()))
+                   ;; the cursor AT THE START of this element belongs in the gap
+                   ;; before it, so it is emitted before the space
+                   ;; The caret draws ON the element -- on a word's first
+                   ;; character, on a form's "(" -- and the GAP before it is
+                   ;; its own position instead: a word's end, or a form's end
+                   ;; slot with an offset, which draws just past its ")".
+                   (pre '())
                    (els
                      (cond ((break? el) (list (list 'break head words bare?)))
                            ((string? el)
-                            (if (and (here? path i) (not (skip-root-cursor? i)))
+                            (if (here? path i)
                                 (list (list 'word (substring el 0 (locus-offset locus)))
                                       '(cursor)
                                       (list 'word (substring el (locus-offset locus))))
                                 (list (list 'word el))))
                            (else
-                            (append (if (and (here? path i) (not (skip-root-cursor? i)))
-                                        '((cursor))
-                                        '())
+                            (append (if (here? path i) (list '(cursor)) '())
                                     (walk el (append path (list i))))))))
               (lp (+ i 1)
                   (if (break? el) words (+ words 1))
-                  (append (reverse (append sp els)) acc))))))))
+                  (append (reverse (append pre sp els)) acc))))))))
 
 ;;; ---- indentation -----------------------------------------------------------
 ;;; Derived per break, never stored: a SPECIAL form's body hangs two past the

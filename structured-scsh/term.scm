@@ -151,6 +151,7 @@
 ;;; ---- keys ------------------------------------------------------------------
 ;;; A key is a character to be typed, or one of:
 ;;;   left right up down home end delete backspace enter tab eof interrupt escape
+;;;   c-left c-right c-m-left c-m-right   (Ctrl-, Ctrl+Alt- with the arrows)
 
 (define (wait-char port)
   ;; the next character if it arrives promptly (as the rest of an escape
@@ -170,23 +171,75 @@
       ((or (char=? c1 #\return) (char=? c1 #\newline)) 'm-return)
       ((char=? c1 #\tab) 'm-tab)
       ((or (char=? c1 #\[) (char=? c1 #\O))
-       (let ((c2 (wait-char port)))
-         (cond ((not c2) 'escape)
-               ((char=? c2 #\A) 'up)
-               ((char=? c2 #\B) 'down)
-               ((char=? c2 #\C) 'right)
-               ((char=? c2 #\D) 'left)
-               ((char=? c2 #\H) 'home)
-               ((char=? c2 #\F) 'end)
-               ((memv c2 (list #\1 #\3 #\4 #\7 #\8))
-                (let ((c3 (wait-char port)))
-                  (if (and c3 (char=? c3 #\~))
-                      (cond ((char=? c2 #\3) 'delete)
-                            ((or (char=? c2 #\1) (char=? c2 #\7)) 'home)
-                            (else 'end))
-                      'escape)))
-               (else 'escape))))
+       (let ((cs (read-csi port)))
+         (csi-key (car cs) (cdr cs))))
       (else 'escape))))
+
+;;; ESC [ params final.  Read the parameter bytes -- digits, ";", and the "?"
+;;; or ">" a terminal's own report may open with -- up to the FINAL byte, which
+;;; is a letter, or "~" for the numbered keys.
+;;;
+;;; Everything up to the final byte is consumed even when nothing below
+;;; recognises it.  That is the point: an unknown sequence must not be left in
+;;; the input, or its tail is read as TYPING.  The old reader matched "1", then
+;;; demanded "~", saw the ";" of ESC [ 1 ; 5 D, gave up and left "5D" behind --
+;;; so Ctrl-Left typed a literal 5D into the command line.
+;;;
+;;; Returns (PARAMS . FINAL); FINAL is #f if the sequence stopped early.
+(define (read-csi port)
+  (let lp ((acc '()))
+    (let ((c (wait-char port)))
+      (cond ((not c) (cons (list->string (reverse acc)) #f))
+            ((or (char-alphabetic? c) (char=? c #\~))
+             (cons (list->string (reverse acc)) c))
+            ((or (char-numeric? c) (char=? c #\;) (char=? c #\?) (char=? c #\>))
+             (lp (cons c acc)))
+            (else (cons (list->string (reverse acc)) #f))))))
+
+;;; A key with a modifier spells it "1;N", where N is 1 + shift(1) + alt(2) +
+;;; ctrl(4) -- so 5 is Ctrl and 7 is Ctrl+Alt.  That parameter is the ONLY
+;;; reason the two chords below can be told apart: the plain arrows are the
+;;; same letters with no parameter at all.
+(define (csi-key params final)
+  (cond
+   ((not final) 'escape)                      ; truncated: nothing to report
+   ((string=? params "")
+    (case final
+      ((#\A) 'up)    ((#\B) 'down)
+      ((#\C) 'right) ((#\D) 'left)
+      ((#\H) 'home)  ((#\F) 'end)
+      (else 'escape)))
+   ;; the numbered keys end in "~": Delete, and Home/End in their two spellings
+   ((char=? final #\~)
+    (case (string->number params)
+      ((3) 'delete)
+      ((1 7) 'home)
+      ((4 8) 'end)
+      (else 'escape)))
+   (else
+    (let ((n (last-semicolon params)))
+      (if n
+          (modified-key (string->number (substring params (+ n 1)
+                                                   (string-length params)))
+                        final)
+          'escape)))))
+
+;;; The index of the last ";" in PARAMS, or #f.  (Written out rather than
+;;; taken from srfi-13: this module imports nothing it does not need.)
+(define (last-semicolon params)
+  (let lp ((i (- (string-length params) 1)))
+    (cond ((< i 0) #f)
+          ((char=? #\; (string-ref params i)) i)
+          (else (lp (- i 1))))))
+
+;;; Only the four chords are named.  Shift-arrow and Alt-arrow (2 and 3) and
+;;; everything else are consumed and reported as a bare escape -- unbound,
+;;; which is what every unbound key does anyway.
+(define (modified-key mod final)
+  (case mod
+    ((5) (case final ((#\C) 'c-right) ((#\D) 'c-left)     (else 'escape)))
+    ((7) (case final ((#\C) 'c-m-right) ((#\D) 'c-m-left) (else 'escape)))
+    (else 'escape)))
 
 ;;; Wait until there is something to read, in short steps rather than one
 ;;; blocking read.  Guile runs a Scheme signal handler only at a safe point, and
@@ -263,6 +316,23 @@
 (define *drawn-row* 0)
 (define *drawn-lines* 1)
 
+;;; Where the cursor was left, as an offset from the frame's FIRST column --
+;;; not from the terminal's column 0.  The frame does not always start at 0
+;;; (it follows whatever the program printed), so "go back to the start of the
+;;; frame and clear it" has to be a relative move, and this is how far back.
+(define *cursor-offset* 0)
+
+;;; Is there a frame on the screen for the next DRAW to clear?
+;;;
+;;; LEAVE-FRAME! gives the frame up when output is about to be written -- a
+;;; job's, or the shell's own -- and the line below is then the PROGRAM's, not
+;;; the editor's.  A draw that goes on clearing it erases what the program
+;;; printed: output that does not end in a newline (the everyday (display 'a))
+;;; leaves the cursor mid-line, and the frame's "\r" + "\x1b[K" wiped it --
+;;; the "evaluation prints nothing" bug.  With no frame to clear the prompt
+;;; simply follows the output, which is what a shell's prompt does.
+(define *frame-drawn?* #f)
+
 ;;; From wherever the cursor sits inside the drawn frame, down past its last
 ;;; line -- where output and the next prompt belong.
 (define (leave-frame!)
@@ -271,6 +341,8 @@
     (let lp ((n down)) (when (positive? n) (display "\r\n") (lp (- n 1))))
     (set! *drawn-row* 0)
     (set! *drawn-lines* 1)
+    (set! *cursor-offset* 0)
+    (set! *frame-drawn?* #f)
     (force-output)))
 
 (define (draw prompt text col row . opts)
@@ -279,26 +351,53 @@
   ;; bold.  Existing callers pass just BOLD and get the old behaviour.
   (let* ((bold (if (pair? opts) (car opts) '()))
          (standout (and (pair? (cdr opts)) (cadr opts))))
-    (when (> *drawn-row* 0)                ; back up to the frame's home line
-      (display (string-append "\x1b[" (number->string *drawn-row*) "A")))
-    (let ((lines (split-newlines (styled text bold standout))))
+    ;; only a frame that is still on the screen is cleared: after LEAVE-FRAME!
+    ;; the cursor is below the old frame and the line it is on is the program's
+    (when *frame-drawn?*
+      (when (> *drawn-row* 0)              ; back up to the frame's home line
+        (display (string-append "\x1b[" (number->string *drawn-row*) "A")))
+      ;; ... and back to the frame's OWN first column.  "\r" would go to the
+      ;; terminal's column 0, where the program's output is, and the "\x1b[K"
+      ;; after it would wipe that output the moment a key was typed: the frame
+      ;; is cleared from where it starts, not from where the line does.
+      (when (> *cursor-offset* 0)
+        (display (string-append "\x1b[" (number->string *cursor-offset*) "D")))
+      (display "\x1b[K"))
+    ;; PLAIN is the same lines with no styling: the cursor arithmetic below
+    ;; counts COLUMNS, and the styled text carries "\x1b[1m" and friends, which
+    ;; take no column at all but are characters like any other to STRING-LENGTH
+    (let ((plain (split-newlines text))
+          (lines (split-newlines (styled text bold standout))))
       (set! *drawn-row* row)
       (set! *drawn-lines* (length lines))
-      (display "\r")
-      (display "\x1b[K")
+      (set! *frame-drawn?* #t)
       (display prompt)
       (display (car lines))
       (for-each (lambda (l) (display "\r\n\x1b[K") (display l)) (cdr lines))
       (display "\x1b[J")                    ; a shorter frame erases a taller one
-      (let ((up (- (length lines) 1 row)))
-        (when (> up 0)
-          (display (string-append "\x1b[" (number->string up) "A"))))
-      (display "\r")
+      ;; Walk the cursor to (row, col) RELATIVE to where the drawing ended,
+      ;; never to an absolute column.  A frame does not always begin in column
+      ;; 0: after output that did not end in a newline it begins wherever the
+      ;; program stopped -- "(a b c)" and then the prompt -- and an absolute
+      ;; "\r" + count then parks the cursor INSIDE that output instead of after
+      ;; the prompt.  Both positions are offsets from the frame's first column,
+      ;; so that column cancels out of the difference and never needs knowing.
+      ;;
       ;; row 0 carries the prompt, so its columns start after it; the other
       ;; lines start where the text does (its indentation is in the text)
-      (let ((c (+ col (if (zero? row) (string-length prompt) 0))))
-        (when (> c 0)
-          (display (string-append "\x1b[" (number->string c) "C"))))
+      (let* ((n      (length lines))
+             (end    (+ (if (= n 1) (string-length prompt) 0)   ; where drawing stopped
+                        (string-length (list-ref plain (- n 1)))))
+             (target (+ col (if (zero? row) (string-length prompt) 0)))
+             (up     (- n 1 row))
+             (delta  (- end target)))       ; >0: step back, <0: step forward
+        (set! *cursor-offset* target)       ; where the next draw must rewind to
+        (when (> up 0)
+          (display (string-append "\x1b[" (number->string up) "A")))
+        (cond ((> delta 0)
+               (display (string-append "\x1b[" (number->string delta) "D")))
+              ((< delta 0)
+               (display (string-append "\x1b[" (number->string (- delta)) "C")))))
       (force-output))))
 
 ;;; ---- the completion listing -------------------------------------------------

@@ -179,7 +179,15 @@
 ;; up/down are history now: the same shape is reached by stepping out with LEFT
 (receive (t l reason frames)
     (session (list #\l #\s 'left 'left 'left #\( 'enter) (start) (inside-first))
-  (check "session: left out of the form, then ( beside it" "(run () (ls))" (render-tree t)))
+  (check "session: left out of the form, then ( wraps it"
+         "(run ((ls)))" (render-tree t)))
+
+;; to put an empty form BESIDE it instead, step back in first: one RIGHT from
+;; the form's "(" lands inside it, where ( inserts rather than wraps
+(receive (t l reason frames)
+    (session (list #\l #\s 'left 'left 'left 'right #\( 'enter) (start) (inside-first))
+  (check "session: right back in, then ( opens an empty form there"
+         "(run (() ls))" (render-tree t)))
 
 ;;; ---- operators do not fire where the user is building a form -----------------
 

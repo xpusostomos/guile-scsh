@@ -54,6 +54,40 @@
   (check "a , opens no command"                 "" (render-tree t))
   (check "and the comma is typed, as the marker" #f taken?))
 
+(receive (t l taken?) (seed #\')
+  (check "a quote opens no command either"       "" (render-tree t))
+  (check "and the quote is typed, not taken"     #f taken?))
+
+;;; ---- "'" -- a line that is a quoted form, not a command ----------------------
+;;; A quote is not a command, so 'a must not open (run ()) and run the "command"
+;;; |'a|.  The quote is the one element that stands at the LINE's own level,
+;;; outside any form -- which is only fair, since a quote is an abbreviation for
+;;; (quote ...) and so is a form all the same.  A quote over a FORM already
+;;; worked (it lands as its own element); over a SYMBOL it is typed as one word,
+;;; and reads as (quote a) through the word-prefix rule.
+
+(define (type-line keys)
+  (let lp ((t '()) (l (make-locus '() 0 0)) (ks keys))
+    (if (null? ks)
+        (values t l)
+        (receive (t2 l2 a) (step t l (car ks) seed (append shell-rules core-rules))
+          (lp t2 l2 (cdr ks))))))
+
+(receive (t l) (type-line (list #\' #\a))
+  (check "a line 'a is a quoted word, not a command" "'a" (render-tree t))
+  (check "and reads as the quote form" '(quote a) (line-datum (tree->sexp t))))
+
+(receive (t l) (type-line (list #\' #\( #\a #\)))
+  (check "a line '(a) draws bare too"                "'(a)" (render-tree t))
+  (check "and is the quote of the form" '(quote (a)) (line-datum (tree->sexp t))))
+
+(receive (t l) (type-line (list #\` #\( #\a #\)))
+  (check "a backtick opens a Scheme line as well"    "`(a)" (render-tree t))
+  (check "and is a quasiquote"  '(quasiquote (a)) (line-datum (tree->sexp t))))
+
+(receive (t l) (type-line (list #\l #\s))
+  (check "a letter still opens a command"            "(run (ls))" (render-tree t)))
+
 ;;; ---- "," -- a line that names a value, not a command -------------------------
 ;;; A REPL has to be able to show you a variable.  Typing ,x leaves one word,
 ;;; which reads as a reference to x; the shell strips the marker, so what the

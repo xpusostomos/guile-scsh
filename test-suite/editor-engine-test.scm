@@ -102,8 +102,9 @@
 (check "with no locus, no styling" '() (bold-of (sexp->tree '(run (ls))) #f))
 
 ;;; ---- the scenario from the terminal, in the tree ---------------------------
-;;; type "ls" -> (run (ls)); put the locus on the second "(" ; press "(" ->
-;;; (run () (ls))   [what you saw]   ; then Tab to regroup, and Tab again.
+;;; type "ls" -> (run (ls)); put the locus on the second "("; press "(" -> the
+;;; form the cursor is standing on is WRAPPED, (run ((ls))), and the cursor
+;;; waits inside the new pair; then Tab to regroup, and Tab again.
 
 (define t0 (sexp->tree '(run ())))
 (receive (t1 l1) (insert-char t0 (make-locus '(1) 0 0) #\l)
@@ -113,16 +114,54 @@
     (check "typing ls locus"  '((1) 0 2)    l2)
 
     (receive (t3 l3) (insert-form t2 (make-locus '() 1 0))
-      (check "insert-form text"  "(run () (ls))" (render-tree t3))
-      (check "insert-form locus enters it" '((1) 0 0) l3)
-      (check "insert-form is one datum"    #t (parses? (render-tree t3)))
+      (check "insert-form wraps the form it is on"
+             "(run ((ls)))" (render-tree t3))
+      (check "insert-form waits inside the new pair" '((1) 0 0) l3)
+      (check "insert-form is one datum" #t (parses? (render-tree t3)))
 
       (receive (t4 l4) (transpose-node t3 l3)
-        (check "Tab slurp"        "(run ((ls)))" (render-tree t4))
-        (check "Tab slurp parses" #t (parses? (render-tree t4)))
+        (check "Tab barfs the wrapped form's child out"
+               "(run (() ls))" (render-tree t4))
+        (check "Tab barf parses" #t (parses? (render-tree t4)))
         (receive (t5 l5) (transpose-node t4 l4)
-          (check "Tab barf returns" "(run () (ls))" (render-tree t5))
-          (check "Tab barf parses"  #t (parses? (render-tree t5))))))))
+          (check "Tab slurps it back" "(run ((ls)))" (render-tree t5))
+          (check "Tab slurp parses"  #t (parses? (render-tree t5))))))))
+
+;;; ---- "(" wraps the form the cursor is standing on ----------------------------
+;;; Insertion puts the new thing to the LEFT of the cursor.  When what is to the
+;;; left is a form's "(", the new ")" can only go one place -- after that form --
+;;; so "(" ON a "(" WRAPS it, and the cursor waits inside the new pair, which is
+;;; where the word that should surround it will land.
+
+(receive (t l) (insert-form (sexp->tree '(run (ls))) (make-locus '() 1 0))
+  (check "( on a form's ( wraps that form" "(run ((ls)))" (render-tree t)))
+
+(receive (t l) (insert-form (sexp->tree '(run (ls))) (make-locus '() 0 0))
+  (check "( on the line's own ( wraps the whole line"
+         "((run (ls)))" (render-tree t))
+  (check "and the cursor stays on the line's (" '(() 0 0) l))
+
+;; what surrounds the form is typed at the cursor, inside the new pair
+(receive (t l) (insert-form (sexp->tree '(run (ls))) (make-locus '() 1 0))
+  (receive (t2 l2) (replace-word t l "begin")
+    (check "typing the surrounder fills the wrapper in"
+           "(run (begin (ls)))" (render-tree t2))))
+
+;; NOT on a "(" -- the form still lands exactly where the cursor is
+(receive (t l) (insert-form (sexp->tree '(run (ls))) (make-locus '(1) 0 0))
+  (check "inside a form, at a word's start: a new form there"
+         "(run (() ls))" (render-tree t)))
+
+;;; ---- left steps INTO an empty form, like any other ---------------------------
+;;; An empty form is '() -- the null list -- and the old reader took that for
+;;; "nothing to the left" and put the cursor on the parent slot instead.  At the
+;;; line's first element that slot is the line's own "(", so the cursor jumped
+;;; clean over the ().  It is a form like any other: left steps inside it.
+
+(check "left from a lands inside the ()"
+       '((0) 0 0) (move-left (sexp->tree '(() a (b) c)) (make-locus '() 1 0)))
+(check "and left again lands on the line's ("
+       '(() 0 0) (move-left (sexp->tree '(() a (b) c)) (make-locus '(0) 0 0)))
 
 ;;; ---- Tab: the cursor does not move, so Tab cycles ----------------------------
 ;;; Everything Tab does happens to the RIGHT of the locus, so the locus keeps
@@ -218,10 +257,10 @@
        "(((ls df) sdf dsf|) zf)" (at nested (move-left nested (make-locus '() 1 0))))
 (check "LEFT inside a form reaches the end of the form before it"
        "(((ls df|) sdf dsf) zf)" (at nested (move-left nested (make-locus '(0) 1 0))))
-(check "LEFT at the start of the line stays put, on the line's own ("
+(check "LEFT at the start of the line reaches the line's own ("
        "|(((ls df) sdf dsf) zf)" (at nested (move-left nested (make-locus '() 0 0))))
-(check "the line's first ( hosts the cursor: root index 0 renders at column 0"
-       "|(ls (wc))" (at (sexp->tree '(ls (wc))) (make-locus '() 0 0)))
+(check "root index 0 now renders just INSIDE the line's (, on the first atom"
+       "(|ls (wc))" (at (sexp->tree '(ls (wc))) (make-locus '() 0 0)))
 (check "a just-opened empty form keeps the cursor between its parens"
        "(|)" (at (list "") (make-locus '() 0 0)))
 
@@ -363,6 +402,24 @@
 (check "and to a word after it"                '(x (quote y))   (tree->sexp '("x" "'" "y")))
 (check "a quasiquote too"                      '(x (quasiquote y)) (tree->sexp '("x" "`" "y")))
 
+;; ... and the same prefix when it was TYPED WITH the word, which is how it
+;; arrives from the keyboard: 'a is ONE word, and it has to read as (quote a).
+;; It did not -- it fell through to the plain reader, which read (quote a)
+;; correctly and then DISCARDED it, because only numbers, strings and booleans
+;; were kept, leaving the SYMBOL |'a| -- which evaluates to
+;; "Unbound variable: |'a|".  A comma was never broken this way; only the two
+;; prefixes nobody had typed into a word yet.
+(check "a quote carried in the word"      '(x (quote y))      (tree->sexp '("x" "'y")))
+(check "a quasiquote carried in the word" '(x (quasiquote y)) (tree->sexp '("x" "`y")))
+(check "a comma carried in the word"      '(x (unquote y))    (tree->sexp '("x" ",y")))
+
+;; a word the reader CHOKES on is a word -- not #f.  #f is a boolean, and a
+;; failed read used to BE #f, so it leaked through as the literal #f and wrecked
+;; the line somewhere else entirely ("Can only stringify strings, symbols, and
+;; integers. (#f)").
+(check "an unreadable word stays a symbol"
+       (list 'x (string->symbol "'")) (tree->sexp '("x" "'")))
+
 (check "a bare quote prefix hugs what follows"
        "(car '(1))" (render-tree '("car" "'" ("1"))))
 
@@ -459,6 +516,72 @@
 (receive (t l) (replace-word (sexp->tree '(run (ls))) (make-locus '(1) 1 0) "")
   (check "writing nothing into an empty slot changes nothing"
          "(run (ls))" (render-tree t)))
+
+;;; ---- the backward moves: taking from the LEFT --------------------------------
+;;; The forward pair move the form's ")" and can leave the cursor alone: all of
+;;; their work is to the right of it, and the form keeps its slot in the parent.
+;;; These two move the form's "(" -- and with it the form's own slot -- so the
+;;; cursor keeps its place on the LINE while the delimiter moves past it.
+;;;
+;;;   (a (b) c)   slurp-back   ->  ((a b) c)    the "(" moves left
+;;;   ((a b) c)   barf-back    ->  (a (b) c)    the "(" moves right
+
+(define (cursor-col t l)
+  (call-with-values (lambda () (render t l)) (lambda (text col row bold) col)))
+
+;; a cursor on a word INSIDE the form does not move: the contents never shift
+;; under it, so its column is the same before and after
+(receive (t l) (slurp-node-back (sexp->tree '(a (b) c)) (make-locus '(1) 0 0))
+  (check "slurp-back: the previous sibling comes into the form"
+         "((a b) c)" (render-tree t))
+  (check "slurp-back: the cursor is still on its word" '((0) 1 0) l)
+  (check "slurp-back: still on its word" 4 (cursor-col t l))
+  (check "slurp-back: the line is still one form" #t (parses? (render-tree t))))
+
+;; ON the form's "(" the cursor stays where it is and the "(" slides out from
+;; under it, leaving it just inside, after the atom that came in
+(receive (t l) (slurp-node-back (sexp->tree '(a (b) c)) (make-locus '() 1 0))
+  (check "slurp-back on the ( : the form takes the atom in"
+         "((a b) c)" (render-tree t))
+  (check "slurp-back on the ( : the cursor is just inside, after it"
+         '((0) 1 0) l))
+
+;; the mirror: barf-back gives the FIRST child up, to stand before the form
+(receive (t l) (barf-node-back (sexp->tree '((a b) c)) (make-locus '(0) 1 0))
+  (check "barf-back: the first child stands before the form"
+         "(a (b) c)" (render-tree t))
+  (check "barf-back: the cursor is still on its word" '((1) 0 0) l)
+  (check "barf-back: at the same column" 4 (cursor-col t l))
+  (check "barf-back: the line is still one form" #t (parses? (render-tree t))))
+
+;; ON the form's "(" the child comes to rest under the cursor, which does not
+;; move -- the mirror of the slurp case above
+(receive (t l) (barf-node-back (sexp->tree '((a b) c)) (make-locus '() 0 0))
+  (check "barf-back on the ( : the child lands under the cursor"
+         "(a (b) c)" (render-tree t))
+  (check "barf-back on the ( : and the cursor did not move" '(() 0 0) l))
+
+;; each is the other's inverse
+(receive (a la) (slurp-node-back (sexp->tree '(a (b) c)) (make-locus '(1) 0 0))
+  (receive (b lb) (barf-node-back a la)
+    (check "slurp-back then barf-back returns the line"
+           '(a (b) c) (tree->sexp b))))
+(receive (a la) (barf-node-back (sexp->tree '((a b) c)) (make-locus '(0) 1 0))
+  (receive (b lb) (slurp-node-back a la)
+    (check "barf-back then slurp-back returns the line"
+           '((a b) c) (tree->sexp b))))
+
+;; nothing at the root, exactly as with the forward pair: the line has no
+;; sibling on its left to take in and no parent to give a child to, so the line
+;; stays ONE form and neither move happens
+(check "nothing to slurp back at the root"
+       #f (can-slurp-back? (sexp->tree '(a (b) c)) (make-locus '() 0 0)))
+(check "nothing to barf back at the root"
+       #f (can-barf-back? (sexp->tree '(a (b) c)) (make-locus '() 0 0)))
+
+;; the forward pair is untouched by any of this
+(receive (t l) (slurp-node (sexp->tree '(a (b) c)) (make-locus '(1) 0 0))
+  (check "forward slurp still takes the next sibling" "(a (b c))" (render-tree t)))
 
 ;;; ---- verdict ----------------------------------------------------------------
 
