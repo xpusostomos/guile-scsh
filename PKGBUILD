@@ -5,6 +5,7 @@
 #   /usr/share/guile/site/3.0/{scsh,editor,script}/*.scm
 #   /usr/lib/guile/3.0/site-ccache/{scsh,editor,script}/*.go
 #   /usr/bin/scsh
+#   /usr/share/man/man1/scsh.1
 #
 # Those are the directories `guile-config info sitedir' and
 # `guile-config info siteccachedir' report on a stock Arch guile; the Makefile

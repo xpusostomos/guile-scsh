@@ -13,6 +13,9 @@
 #   make install-local      into ~/.local, sources only (Guile compiles on use)
 #   make uninstall          remove what install put there
 #   make clean              remove build/
+#
+# Both installs also put man/scsh.1 where man(1) looks for it: PREFIX's
+# share/man/man1, or ~/.local/share/man/man1.
 
 GUILE ?= guile
 GUILD ?= guild
@@ -29,6 +32,8 @@ GUILE_CCACHEDIR := $(shell guile-config info siteccachedir)
 #   make install DESTDIR=$(pkgdir) PREFIX=/usr
 PREFIX    ?= /usr
 BINDIR    ?= $(PREFIX)/bin
+MANDIR    ?= $(PREFIX)/share/man
+MAN1DIR   ?= $(MANDIR)/man1
 SITEDIR   ?= $(PREFIX)/share/guile/site/$(EFFVER)
 CCACHEDIR ?= $(PREFIX)/lib/guile/$(EFFVER)/site-ccache
 
@@ -39,7 +44,15 @@ CACHEHOME ?= $(if $(XDG_CACHE_HOME),$(XDG_CACHE_HOME),$(HOME)/.cache)
 
 LOCALPREFIX  ?= $(HOME)/.local
 LOCALBINDIR  ?= $(LOCALPREFIX)/bin
+LOCALMANDIR  ?= $(LOCALPREFIX)/share/man
+LOCALMAN1DIR ?= $(LOCALMANDIR)/man1
 LOCALSITEDIR ?= $(LOCALPREFIX)/share/guile/site/$(EFFVER)
+
+# --- the manual pages --------------------------------------------------------
+# Nroff sources in man/, installed as they stand.  man-db reads an uncompressed
+# page perfectly well, so nothing here depends on gzip; a packager who wants
+# /usr/share/man/man1/scsh.1.gz can gzip the installed file.
+MANPAGES := $(wildcard man/*.1)
 
 # --- what is a module and what is a script ----------------------------------
 # Every .scm with a define-module is a module: it is compiled and installed
@@ -91,25 +104,28 @@ build/deps.mk: $(MODULES) $(SCRIPTS) tools/mkdeps.scm
 # The old copy is cleared first: a module that has been renamed or deleted
 # would otherwise linger beside the new one and still be found.
 install: all $(PRELUDE_GO)
-	install -d $(DESTDIR)$(SITEDIR) $(DESTDIR)$(CCACHEDIR) $(DESTDIR)$(BINDIR)
+	install -d $(DESTDIR)$(SITEDIR) $(DESTDIR)$(CCACHEDIR) $(DESTDIR)$(BINDIR) $(DESTDIR)$(MAN1DIR)
 	rm -rf $(DESTDIR)$(SITEDIR)/scsh $(DESTDIR)$(SITEDIR)/script $(DESTDIR)$(SITEDIR)/structured-scsh
 	rm -rf $(DESTDIR)$(CCACHEDIR)/scsh $(DESTDIR)$(CCACHEDIR)/structured-scsh
 	for f in $(SOURCES); do install -D -m 644 $$f $(DESTDIR)$(SITEDIR)/$$f; done
 	cp -r build/scsh build/structured-scsh $(DESTDIR)$(CCACHEDIR)/
 	install -m 644 $(PRELUDE_GO) $(DESTDIR)$(SITEDIR)/script/prelude.go
 	install -m 755 bin/scsh $(DESTDIR)$(BINDIR)/scsh
+	for f in $(MANPAGES); do install -D -m 644 $$f $(DESTDIR)$(MAN1DIR)/$$(basename $$f); done
 
 # A local install carries no .go: Guile compiles into the user's own cache the
 # first time it loads a module.  Slower once, then the same as an install, and
 # it survives a Guile upgrade without anyone recompiling anything.
 install-local:
-	install -d $(LOCALSITEDIR) $(LOCALBINDIR)
+	install -d $(LOCALSITEDIR) $(LOCALBINDIR) $(LOCALMAN1DIR)
 	rm -rf $(LOCALSITEDIR)/scsh $(LOCALSITEDIR)/script $(LOCALSITEDIR)/structured-scsh
 	for f in $(SOURCES); do install -D -m 644 $$f $(LOCALSITEDIR)/$$f; done
 	install -m 755 bin/scsh $(LOCALBINDIR)/scsh
+	for f in $(MANPAGES); do install -D -m 644 $$f $(LOCALMAN1DIR)/$$(basename $$f); done
 
-# uninstall removes what install put there: the site tree, its ccache, and the
-# launcher.  It does NOT touch the auto-compile cache, which belongs to whoever
+# uninstall removes what install put there: the site tree, its ccache, the
+# launcher, and the manual page.  It does NOT touch the auto-compile cache,
+# which belongs to whoever
 # RAN the shell -- and under sudo, $HOME and $XDG_CACHE_HOME are root's, not
 # theirs, so it could not find it if it tried.  Entries left behind are keyed by
 # the installed source path; they are harmless (Guile recompiles when the source
@@ -119,6 +135,7 @@ uninstall:
 	rm -rf $(DESTDIR)$(SITEDIR)/scsh $(DESTDIR)$(SITEDIR)/script $(DESTDIR)$(SITEDIR)/structured-scsh
 	rm -rf $(DESTDIR)$(CCACHEDIR)/scsh $(DESTDIR)$(CCACHEDIR)/script $(DESTDIR)$(CCACHEDIR)/structured-scsh
 	rm -f  $(DESTDIR)$(BINDIR)/scsh
+	for f in $(MANPAGES); do rm -f $(DESTDIR)$(MAN1DIR)/$$(basename $$f); done
 
 # A local install ships no .go: Guile compiles those sources into the user's
 # OWN cache the first time it loads them.  That cache is keyed by the absolute
@@ -128,6 +145,7 @@ uninstall:
 uninstall-local:
 	rm -rf $(LOCALSITEDIR)/scsh $(LOCALSITEDIR)/script $(LOCALSITEDIR)/structured-scsh
 	rm -f  $(LOCALBINDIR)/scsh
+	for f in $(MANPAGES); do rm -f $(LOCALMAN1DIR)/$$(basename $$f); done
 	@if [ -n "$(LOCALSITEDIR)" ]; then \
 	   rm -rf $(CACHEHOME)/guile/ccache/*$(LOCALSITEDIR); \
 	 fi
