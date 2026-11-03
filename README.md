@@ -40,7 +40,7 @@ daily driver shell. You can after all type regular commands
 mostly the same as you would in bash, with the same number of
 keystrokes and get the same result.
 
-## Parent matching
+## Paren matching
 
 Put your cursor inside the inner parens of (a (b) c) and look at the right parenthesis:Ctrl + Right (Forward Slurp): Moves the right paren to the right $\rightarrow$ (a (b c))Ctrl + Left (Forward Barf): Moves the right paren to the left $\leftarrow$ (a (b) c)Now look at the left parenthesis:Ctrl + Alt + Left (Backward Slurp): Moves the left paren to the left $\leftarrow$ ((a b) c)Ctrl + Alt + Right (Backward Barf): Moves the left paren to the right $\rightarrow$ (a (b) c)
 
